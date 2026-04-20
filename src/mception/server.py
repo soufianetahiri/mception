@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from . import __version__
 from .engines.baseline import baseline_json, diff_against_baseline, refresh_baseline
@@ -32,6 +32,7 @@ async def audit_server(
     target: str,
     profile: str = "standard",
     target_kind: str = "local",
+    ctx: Context | None = None,
 ) -> str:
     """Audit a single MCP server for security risks.
 
@@ -44,9 +45,15 @@ async def audit_server(
     profile: "quick" | "standard" | "deep" (engine set varies).
     target_kind: "local" | "npm" | "pypi" | "git" | "docker" (auto-detected if omitted).
 
+    If `MCEPTION_ENABLE_LLM_JUDGE=1` is set and the host client supports MCP
+    sampling, ambiguous descriptions are additionally classified by the host's
+    model (advisory-only, never changes verdict alone).
+
     Returns a compact text summary. Full report via `get_report(audit_id)`.
     """
-    report = await run_audit(target, target_kind=target_kind, profile=profile)
+    report = await run_audit(
+        target, target_kind=target_kind, profile=profile, mcp_ctx=ctx
+    )
     s = report.score
     lines = [
         f"Audit: {report.audit_id}",
@@ -65,7 +72,9 @@ async def audit_server(
 
 
 @mcp.tool()
-async def audit_config(config_path: str, profile: str = "standard") -> str:
+async def audit_config(
+    config_path: str, profile: str = "standard", ctx: Context | None = None
+) -> str:
     """Audit an entire MCP client config (claude_desktop_config.json, .mcp.json, etc.).
 
     Runs each server audit, applies whole-config rules (shadowing, lethal-trifecta
@@ -91,7 +100,7 @@ async def audit_config(config_path: str, profile: str = "standard") -> str:
             notes.append(f"Skipping server {name!r}: remote/url entries are not statically analyzed.")
             continue
         try:
-            r = await run_audit(target, profile=profile)
+            r = await run_audit(target, profile=profile, mcp_ctx=ctx)
         except Exception as e:  # pragma: no cover
             notes.append(f"Server {name!r} audit failed: {e}")
             continue

@@ -32,8 +32,14 @@ async def run_audit(
     profile: str = "standard",
     engines: list[Engine] | None = None,
     workdir: Path | None = None,
+    mcp_ctx: object | None = None,
 ) -> AuditReport:
-    """Run the audit pipeline for one target."""
+    """Run the audit pipeline for one target.
+
+    `mcp_ctx`: the FastMCP Context from the current tool call (used to drive
+    the optional LLM judge via MCP sampling). None when running outside an
+    MCP tool (unit tests, CLI batch runs).
+    """
     k = target_kind or detect_kind(target)
     notes: list[str] = []
     fetch_cleanup: Path | None = None
@@ -64,7 +70,9 @@ async def run_audit(
                 )
             )
 
-    ctx = TargetContext(target_ref=target, target_kind=k, workdir=workdir)
+    ctx = TargetContext(
+        target_ref=target, target_kind=k, workdir=workdir, mcp_ctx=mcp_ctx
+    )
     engines_used = engines if engines is not None else _default_engines(profile)
 
     try:

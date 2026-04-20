@@ -32,3 +32,7 @@ class TargetContext:
     workdir: "Path | None" = None  # noqa: F821
     introspection: dict | None = None  # Result of MCP client introspection (tools/resources/prompts)
     manifest: dict | None = None  # package.json / pyproject.toml / dockerfile contents
+    # FastMCP `Context` from the active tool call — needed for the LLM judge
+    # (uses MCP sampling). Any object with an async `.sample(...)` method is accepted,
+    # so tests can pass a mock. None when running outside an MCP tool call.
+    mcp_ctx: "object | None" = None
