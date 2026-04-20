@@ -111,6 +111,8 @@ flowchart TD
 | `MCP-RP-001` | Baseline | Rug pull | Tool / resource / prompt added since pinned baseline |
 | `MCP-RP-002` | Baseline | Rug pull | Tool / resource / prompt removed since pinned baseline |
 | `MCP-RP-003` | Baseline | Rug pull | Description or params changed since pinned baseline |
+| `MCP-LLM-001` | Metadata | Tool poisoning | LLM judge flagged text as suspicious (advisory, uses MCP sampling — off by default) |
+| `MCP-LLM-002` | Metadata | Tool poisoning | LLM judge flagged text as malicious (advisory) |
 | `MCP-META-001` | Dispatcher | Meta | Fetcher could not resolve target (→ inconclusive verdict) |
 
 ---
@@ -456,7 +458,105 @@ mception-cli scan ./my-mcp-server --format=sarif > mception.sarif
 | `MCEPTION_DATA_DIR` | `~/.mception` | Where reports + baselines live. |
 | `MCEPTION_OFFLINE` | `0` | `1` blocks all outbound fetches (OSV, PyPI, npm, git, phantom-repo HEAD). |
 | `MCEPTION_INTROSPECT_TIMEOUT` | `60` | Per-target cap in seconds. |
-| `MCEPTION_ENABLE_LLM_JUDGE` | `0` | Opt-in LLM-assisted classification of ambiguous descriptions. **No API key required** — uses MCP `sampling/createMessage`, so the host agent's own model responds. Silently skipped if the host doesn't implement sampling. |
+| `MCEPTION_ENABLE_LLM_JUDGE` | `0` | Opt-in LLM-assisted classification of ambiguous descriptions (rules `MCP-LLM-001` / `MCP-LLM-002`). **No API key required** — uses MCP `sampling/createMessage`, so the host agent's own model responds. The judge is **advisory-only** (Confidence=Suspected; capped at High severity) — it cannot flip the overall verdict to `unsafe` by itself. It's only asked about items that didn't already trigger a static rule, and is silently skipped when the host doesn't implement sampling. |
+
+### Changing env vars after you've already registered mception
+
+Each MCP client stores the server's env vars in its own config file. After any
+change you need to reload the server in the client (usually `/mcp` → reconnect,
+or restart the app).
+
+#### Claude Code
+
+Either remove + re-add via CLI:
+
+```bash
+claude mcp remove mception -s user
+claude mcp add --scope user mception \
+  -e MCEPTION_ENABLE_LLM_JUDGE=1 \
+  -e MCEPTION_OFFLINE=0 \
+  -e MCEPTION_DATA_DIR=~/.mception \
+  -- mception
+```
+
+Or edit the entry directly in `~/.claude.json` (on Windows:
+`%USERPROFILE%\.claude.json`):
+
+```json
+{
+  "mcpServers": {
+    "mception": {
+      "type": "stdio",
+      "command": "mception",
+      "args": [],
+      "env": {
+        "MCEPTION_ENABLE_LLM_JUDGE": "1",
+        "MCEPTION_OFFLINE": "0",
+        "MCEPTION_DATA_DIR": "~/.mception"
+      }
+    }
+  }
+}
+```
+
+#### Claude Desktop
+
+Open Settings → Developer → Edit Config (or edit the file directly):
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "mception": {
+      "command": "mception",
+      "env": { "MCEPTION_ENABLE_LLM_JUDGE": "1" }
+    }
+  }
+}
+```
+
+#### Codex CLI
+
+Edit `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.mception]
+command = "mception"
+env = { MCEPTION_ENABLE_LLM_JUDGE = "1" }
+```
+
+#### OpenCode
+
+Edit `~/.config/opencode/opencode.json` (or project `opencode.json`):
+
+```json
+{
+  "mcp": {
+    "mception": {
+      "type": "local",
+      "command": ["mception"],
+      "environment": { "MCEPTION_ENABLE_LLM_JUDGE": "1" }
+    }
+  }
+}
+```
+
+#### Cursor / Windsurf / Cline / Zed
+
+These all use the `mcpServers` / `context_servers` blocks shown in [Register
+with an MCP client](#register-with-an-mcp-client). Add an `env` object next to
+`command`:
+
+```json
+"mception": {
+  "command": "mception",
+  "env": { "MCEPTION_ENABLE_LLM_JUDGE": "1" }
+}
+```
+
+(For Zed, the env goes inside the nested `"command": { "env": {…} }` block.)
 
 ---
 
@@ -551,7 +651,6 @@ mception
 - **No target-server execution.** We never import or run the target. This keeps mception safe to run against unknown packages, at the cost of missing servers that register tools dynamically at startup.
 - **No Docker-image target fetching.** `docker:<image>` targets are not pulled/extracted; only statically-parseable artifacts are scanned.
 - **Node/TypeScript SAST is thin.** Tool metadata is extracted via regex; handler-level AST analysis is Python-only. Node code may pass our SAST even when it has bugs a TS-aware scanner would find.
-- **`profile="deep"`** (LLM-assisted) is scaffolded but not yet wired into rules — enabling `MCEPTION_ENABLE_LLM_JUDGE=1` today has no effect on findings.
 
 ---
 
