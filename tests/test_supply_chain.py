@@ -67,6 +67,23 @@ def test_typosquat_real_name_ignored():
     assert r == []
 
 
+def test_typosquat_popular_npm_packages_not_flagged():
+    """Regression for the azure-devops audit: jest was flagged as typosquat of next."""
+    for name in ("jest", "mocha", "vitest", "webpack", "rollup", "next", "nuxt",
+                 "react-dom", "vue", "svelte", "fastify", "redux", "zustand", "bcrypt"):
+        deps = [DependencySummary(name=name, version="1.0.0", ecosystem="npm")]
+        assert list(rule_typosquat(deps)) == [], f"{name} incorrectly flagged as typosquat"
+
+
+def test_typosquat_still_catches_real_near_miss():
+    # These should still trigger — they're off-by-one/two from legitimate packages
+    # and not in the reference set.
+    for bad in ("axois", "expres", "reacct", "jezt"):
+        deps = [DependencySummary(name=bad, version="1.0.0", ecosystem="npm")]
+        r = list(rule_typosquat(deps))
+        assert r, f"{bad} should still be flagged as typosquat"
+
+
 def test_obfuscation_packed_eval(tmp_path: Path):
     (tmp_path / "x.js").write_text(
         "const data='" + ("A" * 300) + "'; eval(atob(data));\n", encoding="utf-8"
