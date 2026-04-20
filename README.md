@@ -20,14 +20,23 @@ Reports render as **Markdown**, **JSON**, or **SARIF** (for CI / GitHub code sca
 ## Capabilities at a glance
 
 - Fetch targets from npm, PyPI, git, or local directories (safe extraction, zip-slip defended).
-- Static extraction of the MCP surface (tools / resources / prompts / server instructions) via Python AST and Node regex — **no code execution**.
+- Static extraction of the MCP surface (tools / resources / prompts / server instructions) across **Python / TypeScript / JavaScript / Go / Rust** — **no code execution**.
 - Five detection engines: metadata, SAST, SCA + supply chain, transport/auth, cross-config.
-- 33 mception rules + OSV feed + optional Bandit passthrough.
+- 46 mception rules (Python / Node / Go / Rust) + OSV feed + optional Bandit passthrough.
 - Deterministic scoring (same input → same ID → same verdict).
 - Hash-pinned baselines with rug-pull diff (detect silent tool-definition changes).
 - Whole-config audit: duplicate tool names across servers, lethal-trifecta composition.
 - Ships as a wheel (`uvx`/`pipx`) and a multi-stage Docker image.
 - No API keys required — optional LLM judge uses MCP `sampling/createMessage` so the host agent's own model does classification.
+
+### Language support
+
+| Language | Extract tools / resources / prompts | Handler SAST | Manifest → SCA |
+| --- | :---: | :---: | :---: |
+| Python | ✅ full AST | ✅ AST + Bandit | `pyproject.toml`, `requirements.txt` |
+| TypeScript / JavaScript | ✅ regex (addTool / tool / addResource / addPrompt / positional / struct) | ✅ regex (cmdi / eval / SSRF / path / yaml / TLS) | `package.json` |
+| Go | ✅ regex (`mcp.NewTool`, `mcp.Tool{}`, `NewResource`, `NewPrompt`) | ✅ regex (cmdi / SSRF / path / deser / bind) | `go.mod` |
+| Rust | ✅ regex (`#[tool(...)]`, `.tool(name, desc)`) | ✅ regex (shell cmd / reqwest) | `Cargo.toml` |
 
 ---
 
@@ -114,6 +123,19 @@ flowchart TD
 | `MCP-LLM-001` | Metadata | Tool poisoning | LLM judge flagged text as suspicious (advisory, uses MCP sampling — off by default) |
 | `MCP-LLM-002` | Metadata | Tool poisoning | LLM judge flagged text as malicious (advisory) |
 | `MCP-META-001` | Dispatcher | Meta | Fetcher could not resolve target (→ inconclusive verdict) |
+| `NODE-CMDI-001` | SAST (Node) | Command injection | `exec` / `execSync` / `spawn({shell:true})` with template literal or concat argument |
+| `NODE-CMDI-002` | SAST (Node) | Command injection | `eval` / `new Function` / `vm.runIn*Context` / `vm.Script` |
+| `NODE-SSRF-001` | SAST (Node) | SSRF | `fetch` / `axios.*` / `http.get` with dynamic URL and no host-allowlist hint |
+| `NODE-PATH-001` | SAST (Node) | Path traversal | `fs.readFile/writeFile/open…` with dynamic path, no `path.resolve` + `startsWith` guard |
+| `NODE-DES-001` | SAST (Node) | Deserialization | `yaml.load` / `yaml.parseDocument` without explicit SAFE schema |
+| `NODE-AUTH-001` | SAST (Node) | Transport | `rejectUnauthorized: false` or `NODE_TLS_REJECT_UNAUTHORIZED=0` |
+| `GO-CMDI-001` | SAST (Go) | Command injection | `exec.Command("sh", "-c", …)` or `exec.Command(var, …)` |
+| `GO-SSRF-001` | SAST (Go) | SSRF | `http.Get/Post/Do` / `http.NewRequest*` without IP-allowlist hint |
+| `GO-PATH-001` | SAST (Go) | Path traversal | `os.Open/ReadFile/Create/WriteFile` / `ioutil.*` without `filepath.EvalSymlinks` + prefix check |
+| `GO-DES-001` | SAST (Go) | Deserialization | `yaml.Unmarshal` / `gob.Decode` / `xml.Unmarshal` |
+| `GO-AUTH-002` | SAST (Go) | Transport | `http.ListenAndServe` bound to `:PORT` / `0.0.0.0` / `[::]` |
+| `RUST-CMDI-001` | SAST (Rust) | Command injection | `Command::new("sh"|"cmd")` followed by `.arg("-c"|"/c")` |
+| `RUST-SSRF-001` | SAST (Rust) | SSRF | `reqwest::get` / `reqwest::Client::new().get/post/request` without `IpAddr::is_private` hint |
 
 ---
 
@@ -650,7 +672,7 @@ mception
 - **No dynamic / runtime fuzzing.** mception does not execute target servers or probe tool handlers live. Classic web-vuln probing (SSRF/CMDi/path traversal fuzzing) is intentionally out of scope for this release.
 - **No target-server execution.** We never import or run the target. This keeps mception safe to run against unknown packages, at the cost of missing servers that register tools dynamically at startup.
 - **No Docker-image target fetching.** `docker:<image>` targets are not pulled/extracted; only statically-parseable artifacts are scanned.
-- **Node/TypeScript SAST is thin.** Tool metadata is extracted via regex; handler-level AST analysis is Python-only. Node code may pass our SAST even when it has bugs a TS-aware scanner would find.
+- **Node/TypeScript/Go/Rust SAST is regex-based, not AST-based.** Python has full AST taint-ish analysis; other languages use tuned regex patterns calibrated against published MCP exploits. Tradeoff: lower false-positive rate than naive SCA but more miss-prone than a tree-sitter pipeline. PRs welcome.
 
 ---
 

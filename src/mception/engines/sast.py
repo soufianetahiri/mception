@@ -21,6 +21,9 @@ from ..rules.code_rules import (
     rule_ssrf,
     rule_unsafe_deserialization,
 )
+from ..rules.go_rules import GO_EXTS, _go_sources, scan_go_file
+from ..rules.node_rules import NODE_EXTS, _node_sources, scan_node_file
+from ..rules.rust_rules import RUST_EXTS, _rust_sources, scan_rust_file
 from .base import EngineResult, TargetContext
 
 
@@ -60,13 +63,50 @@ class SASTEngine:
                 findings.extend(rule_logger_arg_leak(ctx))
                 findings.extend(rule_sql_injection(ctx))
 
+        # Node / TS.
+        node_count = 0
+        for path in _node_sources(target_ctx.workdir):
+            try:
+                src = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if len(src) > 2_000_000:
+                continue
+            node_count += 1
+            findings.extend(scan_node_file(path, src, target_ctx.workdir))
+
+        # Go.
+        go_count = 0
+        for path in _go_sources(target_ctx.workdir):
+            try:
+                src = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if len(src) > 2_000_000:
+                continue
+            go_count += 1
+            findings.extend(scan_go_file(path, src, target_ctx.workdir))
+
+        # Rust.
+        rust_count = 0
+        for path in _rust_sources(target_ctx.workdir):
+            try:
+                src = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if len(src) > 2_000_000:
+                continue
+            rust_count += 1
+            findings.extend(scan_rust_file(path, src, target_ctx.workdir))
+
         # Optional external Bandit sweep; skipped silently if not installed.
         bandit_findings = _run_bandit(target_ctx.workdir)
         findings.extend(bandit_findings)
 
         result.findings = findings
         result.notes.append(
-            f"SAST scanned {scanned} Python files; emitted {len(findings)} findings "
+            f"SAST scanned {scanned} py / {node_count} js-ts / {go_count} go / "
+            f"{rust_count} rs files; emitted {len(findings)} findings "
             f"({'bandit available' if bandit_findings or shutil.which('bandit') else 'bandit not installed; skipped'})."
         )
         return result

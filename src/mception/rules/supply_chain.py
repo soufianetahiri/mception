@@ -60,6 +60,47 @@ _TYPOSQUAT_REFERENCE_NPM = {
     "winston",
     "pino",
 }
+_TYPOSQUAT_REFERENCE_GO = {
+    "github.com/modelcontextprotocol/go-sdk",
+    "github.com/mark3labs/mcp-go",
+    "github.com/metoro-io/mcp-golang",
+    "github.com/spf13/cobra",
+    "github.com/spf13/viper",
+    "github.com/gorilla/mux",
+    "github.com/gin-gonic/gin",
+    "github.com/labstack/echo",
+    "github.com/sirupsen/logrus",
+    "github.com/stretchr/testify",
+    "github.com/google/uuid",
+    "github.com/golang-jwt/jwt",
+    "github.com/jackc/pgx",
+    "github.com/lib/pq",
+    "gopkg.in/yaml.v3",
+    "golang.org/x/crypto",
+    "golang.org/x/net",
+    "golang.org/x/sync",
+}
+_TYPOSQUAT_REFERENCE_CRATES = {
+    "rmcp",
+    "mcp-sdk",
+    "tokio",
+    "serde",
+    "serde_json",
+    "reqwest",
+    "hyper",
+    "axum",
+    "actix-web",
+    "clap",
+    "anyhow",
+    "thiserror",
+    "tracing",
+    "uuid",
+    "chrono",
+    "regex",
+    "rand",
+    "sha2",
+    "base64",
+}
 _TYPOSQUAT_REFERENCE_PYPI = {
     "mcp",
     "anthropic",
@@ -108,7 +149,7 @@ _TYPOSQUAT_REFERENCE_PYPI = {
 class DependencySummary:
     name: str
     version: str | None
-    ecosystem: str  # "npm" | "pypi"
+    ecosystem: str  # "npm" | "pypi" | "go" | "crates"
     spec_raw: str | None = None  # original version spec incl. operator ("^1.2.3", "==2.0")
 
 
@@ -179,6 +220,66 @@ def parse_manifests(workdir: Path) -> tuple[list[DependencySummary], dict]:
                     ecosystem="pypi",
                 )
             )
+
+    # Go module: go.mod
+    gomod = workdir / "go.mod"
+    if gomod.exists():
+        info["go_mod_raw"] = gomod.read_text(encoding="utf-8", errors="replace")
+        for m in re.finditer(
+            r"^\s*([a-zA-Z0-9._/\-]+(?:\.[a-zA-Z0-9._/\-]+)+)\s+v([0-9][\w.\-+]+)",
+            info["go_mod_raw"],
+            re.MULTILINE,
+        ):
+            deps.append(
+                DependencySummary(
+                    name=m.group(1),
+                    version=m.group(2),
+                    spec_raw=f"v{m.group(2)}",
+                    ecosystem="go",
+                )
+            )
+
+    # Rust: Cargo.toml
+    cargo = workdir / "Cargo.toml"
+    if cargo.exists():
+        info["cargo_toml_raw"] = cargo.read_text(encoding="utf-8", errors="replace")
+        # Top-level [dependencies] + [dev-dependencies] — simple tomls only.
+        raw = info["cargo_toml_raw"]
+        for block_name in ("[dependencies]", "[dev-dependencies]", "[build-dependencies]"):
+            idx = raw.find(block_name)
+            if idx < 0:
+                continue
+            end = raw.find("\n[", idx + 1)
+            block = raw[idx:end] if end != -1 else raw[idx:]
+            # 1) `name = "1.2.3"`
+            for m in re.finditer(
+                r'^\s*([a-zA-Z0-9_\-]+)\s*=\s*"([^"]+)"',
+                block,
+                re.MULTILINE,
+            ):
+                deps.append(
+                    DependencySummary(
+                        name=m.group(1),
+                        version=m.group(2),
+                        spec_raw=m.group(2),
+                        ecosystem="crates",
+                    )
+                )
+            # 2) `name = { version = "1.2.3", ... }`
+            for m in re.finditer(
+                r'^\s*([a-zA-Z0-9_\-]+)\s*=\s*\{[^}]*?\bversion\s*=\s*"([^"]+)"',
+                block,
+                re.MULTILINE | re.DOTALL,
+            ):
+                deps.append(
+                    DependencySummary(
+                        name=m.group(1),
+                        version=m.group(2),
+                        spec_raw=m.group(2),
+                        ecosystem="crates",
+                    )
+                )
+
     return deps, info
 
 
@@ -297,9 +398,15 @@ def _callee(node: ast.expr | None) -> str | None:
 def rule_typosquat(deps: list[DependencySummary]) -> Iterable[Finding]:
     """Flag dep names that are edit-distance 1 or 2 from a known-good popular package name."""
     findings: list[Finding] = []
+    ref_by_ecosystem = {
+        "npm": _TYPOSQUAT_REFERENCE_NPM,
+        "pypi": _TYPOSQUAT_REFERENCE_PYPI,
+        "go": _TYPOSQUAT_REFERENCE_GO,
+        "crates": _TYPOSQUAT_REFERENCE_CRATES,
+    }
     for dep in deps:
-        ref = _TYPOSQUAT_REFERENCE_NPM if dep.ecosystem == "npm" else _TYPOSQUAT_REFERENCE_PYPI
-        if dep.name in ref:
+        ref = ref_by_ecosystem.get(dep.ecosystem, set())
+        if not ref or dep.name in ref:
             continue
         best_match = None
         best_dist = 999
