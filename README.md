@@ -397,6 +397,52 @@ Starter snippets are in this repo:
 | `rescan_diff` | `(target, target_kind=null)` | Compare the target's current MCP surface against its pinned baseline. First call creates the baseline; subsequent calls emit `MCP-RP-*` findings on drift. |
 | `refresh_target_baseline` | `(target, target_kind=null)` | Accept the target's current surface as the new baseline (after reviewing a legitimate change). |
 
+#### Arguments — every parameter explained
+
+**`target`** *(string, required for most tools)* — what to audit. Accepted forms:
+
+| Form | Example | Notes |
+| --- | --- | --- |
+| Local path | `C:\path\to\server` or `/opt/srv` | Absolute path to a directory or a single entry file. Nothing is fetched; content is scanned in place. |
+| `pypi:<pkg>[==version]` | `pypi:mcp-server-git==1.0.2` | Downloads from PyPI into a temp dir; if no version, picks latest. |
+| `npm:<pkg>[@version]` | `npm:@modelcontextprotocol/server-filesystem@0.6.0` | Downloads the tarball from the npm registry. |
+| `git+https://…[#ref]` | `git+https://github.com/acme/srv#main` | Shallow-clones the repo. Respects `#branch`/`#tag`/`#sha`. |
+| `docker:<image>[:tag]` | `docker:ghcr.io/acme/srv:1.2` | Metadata-only inspection; source not extracted. |
+
+Non-local targets are blocked when `MCEPTION_OFFLINE=1`.
+
+**`target_kind`** *(string, default `"local"` for `audit_server`, `null` for `rescan_diff`/`refresh_target_baseline`)* — forces the fetcher. Usually auto-detected from the `target` prefix; set explicitly only when a raw string is ambiguous. Accepts `local` | `npm` | `pypi` | `git` | `docker`.
+
+**`profile`** *(string, default `"standard"`)* — engine set selector. See the table below: `quick` | `standard` | `deep`. Also used as part of the audit-ID hash, so two profiles against the same target produce two distinct reports.
+
+**`config_path`** *(string, required for `audit_config`)* — absolute path to an MCP client config file (`.mcp.json`, `claude_desktop_config.json`, Cursor `mcp.json`, etc.). The file is parsed, each declared server is audited via `audit_server`, then **cross-config rules** run over the combined result:
+- `MCP-XCFG-001` — duplicate tool names across different servers (shadowing hazard).
+- `MCP-XCFG-002` — "lethal trifecta" composition (a config that grants private-data read **+** untrusted-content ingestion **+** external-send in one tool surface).
+
+Remote HTTP/SSE server entries are logged and skipped (nothing to statically analyze).
+
+**`audit_id`** *(string, required for `get_report` / `list_findings` / the `mception://report/{id}` resource / the `triage_checklist` prompt)* — the 16-char deterministic hash returned by `audit_server`. Can also be precomputed via `predicted_audit_id(target, profile)`. Enumerate all persisted IDs via `list_audit_ids()`.
+
+**`format`** *(string, default `"markdown"`, for `get_report`)* — output renderer. `markdown` (human-readable, default), `json` (machine-parseable full report), or `sarif` (SARIF 2.1.0 for IDE / code-scanning ingestion, e.g. GitHub code scanning).
+
+**`severity_min`** *(string, default `"info"`, for `list_findings`)* — lower bound on the severity filter. One of `info` | `low` | `medium` | `high` | `critical`. Findings **at or above** this level are returned.
+
+**`category`** *(string, default `null`, for `list_findings`)* — optional category filter. Values come from `Category` in `findings.py`: e.g. `tool_poisoning`, `prompt_injection`, `supply_chain`, `credential_exfiltration`, `transport`, `rug_pull`, `cross_config`. `null` returns all categories.
+
+**`ctx`** *(FastMCP `Context`, injected automatically)* — not user-supplied. The MCP host injects this; mception uses it only to call `sampling/createMessage` when the LLM judge is enabled.
+
+#### Profiles
+
+`profile` selects which engines run against the target. Defined in `src/mception/engines/dispatch.py`.
+
+| Profile | Engines | When to use |
+| --- | --- | --- |
+| `quick` | Metadata only | Fast triage. Parses tool/resource/prompt names + descriptions, runs text rules (tool poisoning, prompt injection, shadowing) and the optional LLM judge. No source-code analysis, no manifest/OSV queries. Seconds per target — good for CI gates or bulk-scanning a registry. |
+| `standard` (default) | Metadata + SAST + SCA + Transport | Full static audit. SAST walks `.py`/`.ts`/`.js`/`.go`/`.rs` for cmdi / SSRF / path-traversal / deserialization / credential exfil. SCA parses manifests, queries OSV, checks typosquats / lockfiles / licenses / unpinned versions. Transport checks bind-all / missing auth / TLS-off. This is the profile you want for "is this MCP safe to install?" |
+| `deep` | Same as `standard` today | Reserved for future heavier passes (e.g. cross-file taint). Currently an alias — any value other than `quick` falls through to the standard engine set. |
+
+Audit IDs are `sha256(target|profile)[:16]`, so the same target audited under two different profiles produces two distinct reports and won't collide on disk. You can bypass profiles entirely from Python by passing `engines=[...]` to `run_audit()`.
+
 ### Resources
 
 | URI | What |
@@ -475,12 +521,30 @@ mception-cli scan ./my-mcp-server --format=sarif > mception.sarif
 
 ## Configuration
 
-| Env var | Default | Purpose |
-| --- | --- | --- |
-| `MCEPTION_DATA_DIR` | `~/.mception` | Where reports + baselines live. |
-| `MCEPTION_OFFLINE` | `0` | `1` blocks all outbound fetches (OSV, PyPI, npm, git, phantom-repo HEAD). |
-| `MCEPTION_INTROSPECT_TIMEOUT` | `60` | Per-target cap in seconds. |
-| `MCEPTION_ENABLE_LLM_JUDGE` | `0` | Opt-in LLM-assisted classification of ambiguous descriptions (rules `MCP-LLM-001` / `MCP-LLM-002`). **No API key required** — uses MCP `sampling/createMessage`, so the host agent's own model responds. The judge is **advisory-only** (Confidence=Suspected; capped at High severity) — it cannot flip the overall verdict to `unsafe` by itself. It's only asked about items that didn't already trigger a static rule, and is silently skipped when the host doesn't implement sampling. |
+All runtime configuration is via environment variables. Defaults are in `src/mception/config.py` (`Settings` model).
+
+| Env var | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `MCEPTION_DATA_DIR` | path | `~/.mception` | Where audit reports and rug-pull baselines live. Two subdirectories are created on first use: `audits/` (one JSON file per audit ID) and `baselines/` (one JSON file per pinned target). Change this when you want per-project isolation, or to point multiple clients at a shared drive for team audits. Relative paths are resolved against the server's working directory. |
+| `MCEPTION_OFFLINE` | bool | `0` | When `1`/`true`/`yes`/`on`, mception **blocks every outbound HTTP request**: OSV vulnerability lookups, PyPI / npm registry calls (age + download counts), git clones, Docker pulls, phantom-repo `HEAD` probes. Local-path targets still work fully. Use this for air-gapped installs or when auditing classified code. Expect more `inconclusive` verdicts and fewer SCA findings. |
+| `MCEPTION_INTROSPECT_TIMEOUT` | int (seconds) | `60` | Hard cap per introspection attempt (fetcher + engine pipeline per target). Prevents a single malformed tarball or slow git clone from stalling a batch scan. Applies per-target, not per-audit, so an `audit_config` over 20 servers still has time to finish. Bump this to `300` for large monorepos or slow networks. |
+| `MCEPTION_ENABLE_LLM_JUDGE` | bool | `0` | Opt-in LLM-assisted classification of ambiguous tool/resource descriptions. Emits rules `MCP-LLM-001` (suspicious) and `MCP-LLM-002` (likely malicious). **No API key required** — uses MCP `sampling/createMessage`, so the host agent's own model responds. **Advisory-only**: findings are `Confidence=Suspected` and capped at `High` severity, so the judge alone cannot flip a verdict to `unsafe_to_use`. Only runs on items that didn't already trigger a static rule. Silently skipped when the host client doesn't implement sampling (e.g. some non-Claude clients). |
+
+### Boolean parsing
+
+Any of `1` / `true` / `yes` / `on` (case-insensitive) → true. Everything else, including unset, → false. So `MCEPTION_OFFLINE=0`, `MCEPTION_OFFLINE=false`, and not setting the variable are all equivalent.
+
+### Where the data lives
+
+```
+$MCEPTION_DATA_DIR/
+├── audits/
+│   └── <audit_id>.json       # one per audit; audit_id = sha256(target|profile)[:16]
+└── baselines/
+    └── <target_hash>.json    # pinned tool/resource/prompt fingerprints for rug-pull diff
+```
+
+Deleting a file under `audits/` is safe — it just forgets the report. Deleting under `baselines/` resets the rug-pull check for that target (the next `rescan_diff` will create a fresh baseline and report no drift).
 
 ### Changing env vars after you've already registered mception
 
