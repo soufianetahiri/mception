@@ -33,10 +33,34 @@ class ExtractedItem:
 _DECORATOR_KINDS = {"tool": "tool", "resource": "resource", "prompt": "prompt"}
 _NODE_ADD_TOOL_RX = re.compile(
     r"""(?xs)
-    \.addTool\s*\(\s*\{\s*
+    \.(?:addTool|tool|registerTool)\s*\(\s*\{\s*
       (?:[^}]*?\bname\s*:\s*(?P<q1>['"])(?P<name>[^'"]+)(?P=q1))
       (?:[^}]*?\bdescription\s*:\s*(?P<q2>['"`])(?P<desc>(?:\\.|(?!(?P=q2)).)*)(?P=q2))?
     """,
+)
+# server.tool("name", "description", schema, handler)  —  positional form.
+_NODE_POSITIONAL_TOOL_RX = re.compile(
+    r"""(?xs)
+    \.(?:tool|registerTool)\s*\(\s*
+      (?P<q1>['"`])(?P<name>[^'"`]+)(?P=q1)\s*,\s*
+      (?P<q2>['"`])(?P<desc>(?:\\.|(?!(?P=q2)).)*)(?P=q2)
+    """
+)
+# server.addResource({ uri/name, description })
+_NODE_ADD_RESOURCE_RX = re.compile(
+    r"""(?xs)
+    \.(?:addResource|resource|registerResource)\s*\(\s*\{\s*
+      (?:[^}]*?\b(?:uri|name)\s*:\s*(?P<q1>['"`])(?P<name>[^'"`]+)(?P=q1))
+      (?:[^}]*?\bdescription\s*:\s*(?P<q2>['"`])(?P<desc>(?:\\.|(?!(?P=q2)).)*)(?P=q2))?
+    """
+)
+# server.addPrompt({ name, description })
+_NODE_ADD_PROMPT_RX = re.compile(
+    r"""(?xs)
+    \.(?:addPrompt|prompt|registerPrompt)\s*\(\s*\{\s*
+      (?:[^}]*?\bname\s*:\s*(?P<q1>['"`])(?P<name>[^'"`]+)(?P=q1))
+      (?:[^}]*?\bdescription\s*:\s*(?P<q2>['"`])(?P<desc>(?:\\.|(?!(?P=q2)).)*)(?P=q2))?
+    """
 )
 _NODE_TOOL_OBJ_RX = re.compile(
     r"""(?xs)
@@ -47,7 +71,7 @@ _NODE_TOOL_OBJ_RX = re.compile(
     """,
 )
 _INSTRUCTIONS_RX = re.compile(
-    r"""server\.instructions\s*=\s*(?P<q>['"`])(?P<text>(?:\\.|(?!(?P=q)).)*)(?P=q)"""
+    r"""(?:server|mcp|srv)\.instructions\s*=\s*(?P<q>['"`])(?P<text>(?:\\.|(?!(?P=q)).)*)(?P=q)"""
 )
 
 
@@ -60,6 +84,10 @@ def extract_from_workdir(workdir: Path) -> list[ExtractedItem]:
                 items.extend(_extract_python(p))
             elif p.suffix in (".js", ".mjs", ".cjs", ".ts", ".tsx"):
                 items.extend(_extract_node(p))
+            elif p.suffix == ".go":
+                items.extend(_extract_go(p))
+            elif p.suffix == ".rs":
+                items.extend(_extract_rust(p))
         except (SyntaxError, UnicodeDecodeError):
             # Skip files we can't parse; don't fail the whole audit.
             continue
@@ -67,13 +95,13 @@ def extract_from_workdir(workdir: Path) -> list[ExtractedItem]:
 
 
 def _walk_source_files(root: Path):
-    skip = {".git", "node_modules", "__pycache__", "dist", "build", ".venv", "venv"}
+    skip = {".git", "node_modules", "__pycache__", "dist", "build", ".venv", "venv", "target", "vendor"}
     for p in root.rglob("*"):
         if not p.is_file():
             continue
         if any(part in skip for part in p.parts):
             continue
-        if p.suffix in (".py", ".js", ".mjs", ".cjs", ".ts", ".tsx"):
+        if p.suffix in (".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".go", ".rs"):
             yield p
 
 
@@ -214,8 +242,10 @@ def _attr_chain(node: ast.expr | None) -> str | None:
 def _extract_node(path: Path) -> list[ExtractedItem]:
     src = path.read_text(encoding="utf-8", errors="replace")
     out: list[ExtractedItem] = []
+    found_any = False
 
     for m in _NODE_ADD_TOOL_RX.finditer(src):
+        found_any = True
         out.append(
             ExtractedItem(
                 kind="tool",
@@ -225,7 +255,39 @@ def _extract_node(path: Path) -> list[ExtractedItem]:
                 line=src[: m.start()].count("\n") + 1,
             )
         )
-
+    for m in _NODE_POSITIONAL_TOOL_RX.finditer(src):
+        found_any = True
+        out.append(
+            ExtractedItem(
+                kind="tool",
+                name=m.group("name"),
+                description=_unescape(m.group("desc")),
+                source_file=path,
+                line=src[: m.start()].count("\n") + 1,
+            )
+        )
+    for m in _NODE_ADD_RESOURCE_RX.finditer(src):
+        found_any = True
+        out.append(
+            ExtractedItem(
+                kind="resource",
+                name=m.group("name"),
+                description=_unescape(m.group("desc")) if m.group("desc") else None,
+                source_file=path,
+                line=src[: m.start()].count("\n") + 1,
+            )
+        )
+    for m in _NODE_ADD_PROMPT_RX.finditer(src):
+        found_any = True
+        out.append(
+            ExtractedItem(
+                kind="prompt",
+                name=m.group("name"),
+                description=_unescape(m.group("desc")) if m.group("desc") else None,
+                source_file=path,
+                line=src[: m.start()].count("\n") + 1,
+            )
+        )
     for m in _INSTRUCTIONS_RX.finditer(src):
         out.append(
             ExtractedItem(
@@ -237,8 +299,8 @@ def _extract_node(path: Path) -> list[ExtractedItem]:
             )
         )
     # Fallback: objects with name + description in handler returns.
-    # Only used when we found zero addTool hits (to avoid double-counting).
-    if not any(_NODE_ADD_TOOL_RX.finditer(src)):
+    # Only used when we found zero explicit MCP registration calls (to avoid double-counting).
+    if not found_any:
         for m in _NODE_TOOL_OBJ_RX.finditer(src):
             out.append(
                 ExtractedItem(
@@ -249,6 +311,145 @@ def _extract_node(path: Path) -> list[ExtractedItem]:
                     line=src[: m.start()].count("\n") + 1,
                 )
             )
+    return out
+
+
+# ---- Go (regex; cover mcp-go and official go-sdk idioms) ----
+
+# mcp.NewTool("name", mcp.WithDescription("..."), ...)
+_GO_NEWTOOL_RX = re.compile(
+    r"""(?sx)
+    mcp\.NewTool\s*\(\s*
+      "(?P<name>[^"]+)"\s*,
+      (?P<rest>[^)]*?
+        mcp\.WithDescription\s*\(\s*"(?P<desc>(?:\\.|[^"\\])*)"\s*\)
+      )?
+    """
+)
+# Struct literal: mcp.Tool{Name: "x", Description: "y"}
+_GO_TOOL_STRUCT_RX = re.compile(
+    r"""(?sx)
+    mcp\.Tool\s*\{
+      [^}]*?\bName\s*:\s*"(?P<name>[^"]+)"
+      [^}]*?\bDescription\s*:\s*"(?P<desc>(?:\\.|[^"\\])*)"
+    """
+)
+# Resource / Prompt: mcp.NewResource("uri","desc", ...)
+_GO_NEWRESOURCE_RX = re.compile(
+    r"""(?sx)
+    mcp\.NewResource\s*\(\s*
+      "(?P<name>[^"]+)"\s*,\s*
+      (?:"(?P<desc>(?:\\.|[^"\\])*)")?
+    """
+)
+_GO_NEWPROMPT_RX = re.compile(
+    r"""(?sx)
+    mcp\.NewPrompt\s*\(\s*
+      "(?P<name>[^"]+)"
+      (?:\s*,\s*mcp\.WithPromptDescription\s*\(\s*"(?P<desc>(?:\\.|[^"\\])*)"\s*\))?
+    """
+)
+
+
+def _extract_go(path: Path) -> list[ExtractedItem]:
+    src = path.read_text(encoding="utf-8", errors="replace")
+    out: list[ExtractedItem] = []
+    for m in _GO_NEWTOOL_RX.finditer(src):
+        desc = m.group("desc")
+        out.append(
+            ExtractedItem(
+                kind="tool",
+                name=m.group("name"),
+                description=_go_unescape(desc) if desc else None,
+                source_file=path,
+                line=src[: m.start()].count("\n") + 1,
+            )
+        )
+    for m in _GO_TOOL_STRUCT_RX.finditer(src):
+        out.append(
+            ExtractedItem(
+                kind="tool",
+                name=m.group("name"),
+                description=_go_unescape(m.group("desc")),
+                source_file=path,
+                line=src[: m.start()].count("\n") + 1,
+            )
+        )
+    for m in _GO_NEWRESOURCE_RX.finditer(src):
+        desc = m.group("desc")
+        out.append(
+            ExtractedItem(
+                kind="resource",
+                name=m.group("name"),
+                description=_go_unescape(desc) if desc else None,
+                source_file=path,
+                line=src[: m.start()].count("\n") + 1,
+            )
+        )
+    for m in _GO_NEWPROMPT_RX.finditer(src):
+        desc = m.group("desc")
+        out.append(
+            ExtractedItem(
+                kind="prompt",
+                name=m.group("name"),
+                description=_go_unescape(desc) if desc else None,
+                source_file=path,
+                line=src[: m.start()].count("\n") + 1,
+            )
+        )
+    return out
+
+
+def _go_unescape(s: str) -> str:
+    return s.replace('\\"', '"').replace("\\\\", "\\").replace("\\n", "\n").replace("\\t", "\t")
+
+
+# ---- Rust (regex; cover rmcp / mcp-sdk idioms) ----
+
+# Attribute-style: #[tool(description = "...")]  fn name(...)
+_RUST_TOOL_ATTR_RX = re.compile(
+    r"""(?sx)
+    \#\[\s*tool\s*\(\s*
+      (?:[^)]*?\bdescription\s*=\s*"(?P<desc>(?:\\.|[^"\\])*)")?
+      [^)]*?
+    \)\s*\]\s*
+    (?:async\s+)?fn\s+(?P<name>\w+)
+    """
+)
+# Builder: .tool("name", "description", ...)
+_RUST_TOOL_BUILDER_RX = re.compile(
+    r"""(?sx)
+    \.tool\s*\(\s*
+      "(?P<name>[^"]+)"\s*,\s*
+      "(?P<desc>(?:\\.|[^"\\])*)"
+    """
+)
+
+
+def _extract_rust(path: Path) -> list[ExtractedItem]:
+    src = path.read_text(encoding="utf-8", errors="replace")
+    out: list[ExtractedItem] = []
+    for m in _RUST_TOOL_ATTR_RX.finditer(src):
+        desc = m.group("desc")
+        out.append(
+            ExtractedItem(
+                kind="tool",
+                name=m.group("name"),
+                description=_go_unescape(desc) if desc else None,
+                source_file=path,
+                line=src[: m.start()].count("\n") + 1,
+            )
+        )
+    for m in _RUST_TOOL_BUILDER_RX.finditer(src):
+        out.append(
+            ExtractedItem(
+                kind="tool",
+                name=m.group("name"),
+                description=_go_unescape(m.group("desc")),
+                source_file=path,
+                line=src[: m.start()].count("\n") + 1,
+            )
+        )
     return out
 
 
