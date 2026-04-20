@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+*.whl
+.venv/
+venv/
+env/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# mception runtime data (user-specific)
+.mception/
+
+# IDE / agent workspace
+.idea/
+.vscode/
+.claude/
+*.swp
+.DS_Store

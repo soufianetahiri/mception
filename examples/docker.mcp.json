@@ -1,0 +1,15 @@
+{
+  "_comment": "Run mception via docker. The container speaks stdio over the client's JSON-RPC channel.",
+  "mcpServers": {
+    "mception": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--mount", "type=bind,source=./examples,target=/workspace",
+        "ghcr.io/mception/mception:latest"
+      ]
+    }
+  }
+}

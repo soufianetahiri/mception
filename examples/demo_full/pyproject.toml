@@ -1,0 +1,4 @@
+[project]
+name = "demo-bad"
+version = "0.1.0"
+dependencies = ["requessts==2.0"]

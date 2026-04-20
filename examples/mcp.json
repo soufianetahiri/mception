@@ -1,0 +1,17 @@
+{
+  "_comment": "Sample MCP client config declaring mception alongside some target servers.",
+  "_usage": "Copy into ~/.claude/.mcp.json (Claude Code) or Claude Desktop's config.",
+  "mcpServers": {
+    "mception": {
+      "command": "uvx",
+      "args": ["mception"],
+      "env": {
+        "MCEPTION_DATA_DIR": "~/.mception"
+      }
+    },
+    "_example_target_to_audit": {
+      "command": "uvx",
+      "args": ["some-mcp-server-you-want-to-check"]
+    }
+  }
+}

