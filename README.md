@@ -174,6 +174,37 @@ docker run --rm -i mception        # stdio MCP server in a container
 uvx mception
 ```
 
+### Portable single-file executable (no Python on the target machine)
+
+Builds a standalone `mception` binary that bundles the Python interpreter and every runtime dependency into one file. Useful for handing mception to a colleague who doesn't (and shouldn't have to) install Python, or for locked-down environments.
+
+```bash
+# from a dev checkout, in the venv:
+pip install -e ".[bundle]"
+python packaging/build_bundle.py
+```
+
+Produces `dist/mception.exe` on Windows (~24 MB) and `dist/mception` on macOS/Linux. Copy the single file anywhere and run it directly — no venv, no repo, no `pip` needed. It registers with an MCP client exactly like the regular `mception` executable — just point the `command` at the full path of the bundled binary:
+
+```jsonc
+// Claude Code / Claude Desktop / Cursor / etc.
+{
+  "mcpServers": {
+    "mception": {
+      "command": "C:/tools/mception.exe",
+      "args": [],
+      "env": { "MCEPTION_ENABLE_LLM_JUDGE": "1" }
+    }
+  }
+}
+```
+
+Notes & limits:
+- The bundle is **platform-specific** — build on Windows for a Windows `.exe`, on Linux for a Linux binary, etc. There is no cross-compile.
+- Optional extras (`bandit`, `semgrep`, `cyclonedx-bom`) are **excluded** to keep the bundle lean. Users who need those SAST/SCA backends should install mception the normal way.
+- PyInstaller first-run cold-start is ~1 s (the binary unpacks into a temp dir). Subsequent starts reuse the cache.
+- Build config lives in [`packaging/mception.spec`](packaging/mception.spec); the [`packaging/build_bundle.py`](packaging/build_bundle.py) helper just wraps `pyinstaller` with clean defaults.
+
 ---
 
 ## Register with an MCP client
