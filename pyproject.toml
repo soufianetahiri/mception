@@ -41,6 +41,11 @@ sca = [
     "rapidfuzz>=3.9",
     "packaging>=24.0",
 ]
+# Build a portable single-file executable that bundles Python + runtime deps.
+# Only needed if you run `python packaging/build_bundle.py` to produce `dist/mception(.exe)`.
+bundle = [
+    "pyinstaller>=6.0",
+]
 # Note: the optional LLM judge does NOT need an API key. It uses the MCP
 # `sampling/createMessage` primitive so the host agent's own model answers.
 all = [
