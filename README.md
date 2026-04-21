@@ -205,6 +205,26 @@ Notes & limits:
 - PyInstaller first-run cold-start is ~1 s (the binary unpacks into a temp dir). Subsequent starts reuse the cache.
 - Build config lives in [`packaging/mception.spec`](packaging/mception.spec); the [`packaging/build_bundle.py`](packaging/build_bundle.py) helper just wraps `pyinstaller` with clean defaults.
 
+### One-click Claude Desktop install — `.mcpb` bundle
+
+Claude Desktop installs MCP servers from `.mcpb` files (a ZIP with a `manifest.json` at the root). Wrap the PyInstaller exe into one:
+
+```bash
+python packaging/build_bundle.py    # produces dist/mception.exe
+python packaging/build_mcpb.py      # produces dist/mception-<version>.mcpb
+```
+
+Then double-click `dist/mception-0.3.1.mcpb` (or drag it onto Claude Desktop). The client reads [`packaging/manifest.json`](packaging/manifest.json), prompts for:
+
+- Enable LLM judge (`MCEPTION_ENABLE_LLM_JUDGE`)
+- Offline mode (`MCEPTION_OFFLINE`)
+- Data directory (`MCEPTION_DATA_DIR`)
+- Introspection timeout (`MCEPTION_INTROSPECT_TIMEOUT`)
+
+…substitutes them into the server's env, and registers mception in the MCP server list — no manual JSON editing, no repo, no Python needed on the target machine.
+
+The `.mcpb` file is the one artifact to share with colleagues: it contains both the manifest and the bundled binary. Distribute via email, shared drive, internal registry, or a GitHub Release asset.
+
 ---
 
 ## Register with an MCP client

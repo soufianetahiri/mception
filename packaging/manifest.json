@@ -1,0 +1,79 @@
+{
+  "manifest_version": "0.2",
+  "name": "mception",
+  "display_name": "mception — MCP security auditor",
+  "version": "0.3.1",
+  "description": "Audits other MCP servers for security risks and returns safe / caution / unsafe verdicts.",
+  "long_description": "mception is a meta-MCP: it registers as an MCP server and exposes tools that audit OTHER MCP servers for tool poisoning, prompt injection, SSRF, command injection, credential exfiltration, supply-chain risk, rug-pulls, and lethal-trifecta composition across multiple servers in one config. Point it at a local path, an npm / PyPI package, a git repo, or a Docker image, and it returns one of: safe_to_use, use_with_caution, unsafe_to_use, inconclusive. 46 rules across 6 categories; supports servers written in Python, TypeScript/JavaScript, Go, or Rust. No API key required — the optional LLM judge uses the MCP sampling primitive so the host agent's own model responds.",
+  "author": {
+    "name": "Soufiane Tahiri",
+    "url": "https://github.com/soufianetahiri"
+  },
+  "homepage": "https://github.com/soufianetahiri/mception",
+  "documentation": "https://github.com/soufianetahiri/mception#readme",
+  "support": "https://github.com/soufianetahiri/mception/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/soufianetahiri/mception"
+  },
+  "license": "MIT",
+  "keywords": ["mcp", "security", "audit", "llm", "ai-security", "sast", "supply-chain"],
+  "server": {
+    "type": "binary",
+    "entry_point": "mception.exe",
+    "mcp_config": {
+      "command": "${__dirname}/mception.exe",
+      "args": [],
+      "env": {
+        "MCEPTION_ENABLE_LLM_JUDGE": "${user_config.enable_llm_judge}",
+        "MCEPTION_OFFLINE": "${user_config.offline_mode}",
+        "MCEPTION_DATA_DIR": "${user_config.data_dir}",
+        "MCEPTION_INTROSPECT_TIMEOUT": "${user_config.introspect_timeout_s}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "audit_server",             "description": "Audit one MCP server (local / npm / PyPI / git / docker)." },
+    { "name": "audit_config",             "description": "Audit a whole MCP client config and apply cross-config rules." },
+    { "name": "get_report",                "description": "Render a persisted audit as Markdown, JSON, or SARIF." },
+    { "name": "list_findings",             "description": "Filter findings of an audit by severity / category." },
+    { "name": "list_audit_ids",            "description": "Enumerate all persisted audits." },
+    { "name": "predicted_audit_id",        "description": "Compute the deterministic audit ID for a target." },
+    { "name": "rescan_diff",               "description": "Compare current MCP surface to pinned baseline (rug-pull detection)." },
+    { "name": "refresh_target_baseline",   "description": "Accept the current MCP surface as the new baseline." }
+  ],
+  "user_config": {
+    "enable_llm_judge": {
+      "type": "string",
+      "title": "Enable LLM judge",
+      "description": "Set to '1' to classify ambiguous tool descriptions using the host's own model via MCP sampling. No API key needed. Advisory-only — cannot flip a verdict to unsafe alone.",
+      "default": "0",
+      "required": false
+    },
+    "offline_mode": {
+      "type": "string",
+      "title": "Offline mode",
+      "description": "Set to '1' to block all outbound network calls (OSV, npm, PyPI, git, phantom-repo probes). Local-path audits still work fully.",
+      "default": "0",
+      "required": false
+    },
+    "data_dir": {
+      "type": "directory",
+      "title": "Data directory",
+      "description": "Where audit reports and rug-pull baselines are stored.",
+      "default": "${HOME}/.mception",
+      "required": false
+    },
+    "introspect_timeout_s": {
+      "type": "string",
+      "title": "Introspection timeout (seconds)",
+      "description": "Per-target cap on introspection time. Raise this for large monorepos or slow networks.",
+      "default": "60",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["win32"],
+    "claude_desktop": ">=0.10.0"
+  }
+}
