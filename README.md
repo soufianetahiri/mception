@@ -162,11 +162,45 @@ flowchart TD
 
 ## Install
 
-### From the wheel (built in `dist/`)
+mception is published in three places so you can pick the install path that matches your client:
+
+| Source | Best for | Command |
+| --- | --- | --- |
+| **Official MCP registry** | registry-aware clients (Claude Desktop Directory) | auto-discovered as `io.github.soufianetahiri/mception` |
+| **PyPI** | Python users, CI, uvx / pipx workflows | `uvx mception` or `pipx install mception` |
+| **GitHub Release** | Windows users without Python, air-gapped installs | download `.mcpb` / `.exe` from [latest release](https://github.com/soufianetahiri/mception/releases/latest) |
+
+### Via `uvx` — no install needed (recommended)
+
+`uvx` runs the published PyPI package in an ephemeral environment. Nothing persists on the host; every invocation uses the latest version (or pin with `@<version>`).
 
 ```bash
-pipx install dist/mception-0.5.0-py3-none-any.whl
-mception                           # starts the stdio MCP server
+uvx mception                        # latest
+uvx mception@0.5.1                  # pinned
+```
+
+### Via `pipx` — install once, upgrade in place
+
+```bash
+pipx install mception
+pipx upgrade mception               # when a new version ships
+mception                            # stdio MCP server
+```
+
+### From the official MCP registry
+
+If your MCP client supports the official registry ([registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io)), mception is listed as **`io.github.soufianetahiri/mception`** and can be added through the client's directory UI. The registry entry points at the PyPI package, so `uvx` / `pipx` handle the actual install under the hood.
+
+Verify the listing:
+
+```bash
+curl https://registry.modelcontextprotocol.io/v0/servers/io.github.soufianetahiri/mception
+```
+
+### From a local wheel (offline / pre-release testing)
+
+```bash
+pipx install dist/mception-0.5.1-py3-none-any.whl
 ```
 
 ### From source (editable, for development)
@@ -187,12 +221,6 @@ pip install -e ".[sast,sca]"       # runtime extras (Bandit, CycloneDX)
 ```bash
 docker build -t mception .
 docker run --rm -i mception        # stdio MCP server in a container
-```
-
-### Via `uvx` (once on PyPI)
-
-```bash
-uvx mception
 ```
 
 ### Portable single-file executable (no Python on the target machine)
@@ -235,7 +263,7 @@ python packaging/build_bundle.py    # produces dist/mception.exe
 python packaging/build_mcpb.py      # produces dist/mception-<version>.mcpb
 ```
 
-Then double-click `dist/mception-0.5.0.mcpb` (or drag it onto Claude Desktop). The client reads [`packaging/manifest.json`](packaging/manifest.json), prompts for:
+Then double-click `dist/mception-0.5.1.mcpb` (or drag it onto Claude Desktop). The client reads [`packaging/manifest.json`](packaging/manifest.json), prompts for:
 
 - Enable LLM judge (`MCEPTION_ENABLE_LLM_JUDGE`)
 - Offline mode (`MCEPTION_OFFLINE`)
@@ -250,13 +278,21 @@ The `.mcpb` file is the one artifact to share with colleagues: it contains both 
 
 ## Register with an MCP client
 
-All examples assume `mception` is on your `PATH` (after `pipx install …` or
-`pip install`). Replace with the Docker variant or an absolute path as needed:
+All examples assume `mception` is on your `PATH` (after `pipx install mception` or
+`pip install`). Three interchangeable forms — pick whichever matches your environment:
 
 ```bash
-# Docker form — works in every client, just substitute this for `mception`:
+# PATH form (after pipx install / pip install):
+mception
+
+# uvx form — no install, always latest from PyPI:
+uvx mception
+
+# Docker form:
 docker run --rm -i mception
 ```
+
+For each client config below, substitute whichever command you prefer. The `uvx` form is the lowest-friction for users who don't want Python installed globally.
 
 ### Claude Code (CLI)
 

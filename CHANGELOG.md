@@ -2,6 +2,16 @@
 
 All notable changes to mception.
 
+## [0.5.1] — 2026-04-22
+
+### Added
+- Published to PyPI: `uvx mception` / `pipx install mception` now work out of the box. https://pypi.org/project/mception/
+- Listed on the official MCP registry as `io.github.soufianetahiri/mception`. https://registry.modelcontextprotocol.io/v0/servers/io.github.soufianetahiri/mception
+- `mcp-name` ownership attestation line in README (required by the registry to cross-verify PyPI publisher control).
+
+### Changed
+- `server.json` migrated to schema `2025-12-11` (current).
+
 ## [0.5.0] — 2026-04-22
 
 ### Added
