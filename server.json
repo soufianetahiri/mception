@@ -1,0 +1,51 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-11-20/server.schema.json",
+  "name": "io.github.soufianetahiri/mception",
+  "description": "Audits other MCP servers for security risks. Static analysis across Python / TypeScript / JavaScript / Go / Rust / Ruby plus supply-chain, transport, and cross-config checks. Returns safe / caution / unsafe / inconclusive verdicts.",
+  "version": "0.5.0",
+  "repository": {
+    "url": "https://github.com/soufianetahiri/mception",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/soufianetahiri/mception#readme",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "mception",
+      "version": "0.5.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "MCEPTION_DATA_DIR",
+          "description": "Where audit reports and rug-pull baselines live. Defaults to ~/.mception.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "MCEPTION_OFFLINE",
+          "description": "Set to 1 to block all outbound HTTP requests (OSV, registry signals, phantom-repo probes).",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "0"
+        },
+        {
+          "name": "MCEPTION_INTROSPECT_TIMEOUT",
+          "description": "Per-target timeout in seconds for the fetcher + engine pipeline.",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "60"
+        },
+        {
+          "name": "MCEPTION_ENABLE_LLM_JUDGE",
+          "description": "Set to 1 to enable advisory LLM-assisted classification of ambiguous descriptions via MCP sampling. No API key needed.",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "0"
+        }
+      ]
+    }
+  ]
+}
