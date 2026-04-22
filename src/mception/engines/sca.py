@@ -46,7 +46,7 @@ class SCAEngine:
         findings.extend(rule_typosquat(deps))
         findings.extend(rule_obfuscation(target_ctx.workdir))
         findings.extend(rule_unpinned_versions(deps, info))
-        findings.extend(rule_no_lockfile(target_ctx.workdir, deps))
+        findings.extend(rule_no_lockfile(target_ctx.workdir, deps, target_ctx.target_kind))
         findings.extend(rule_suspicious_binaries(target_ctx.workdir))
         findings.extend(rule_missing_license(info, target_ctx.workdir))
 
@@ -74,19 +74,46 @@ class SCAEngine:
 _OSV_URL = "https://api.osv.dev/v1/querybatch"
 
 
+_OSV_ECOSYSTEM = {
+    "npm": "npm",
+    "pypi": "PyPI",
+    "go": "Go",
+    "crates": "crates.io",
+}
+
+
+def _demote(sev: Severity) -> Severity:
+    """Drop one severity notch. Used for dev/build-scope vulns, which are not
+    runtime-reachable by consumers of the package."""
+    chain = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.INFO]
+    try:
+        return chain[chain.index(sev) + 1]
+    except (ValueError, IndexError):
+        return sev
+
+
 async def _osv_query(deps: list[DependencySummary]) -> tuple[list[Finding], str]:
-    """Single batch OSV request per audit. Vulnerabilities → findings."""
+    """Single batch OSV request per audit. Vulnerabilities → findings.
+
+    Queries every supported ecosystem. Vulns in dev/build/optional-scope deps are
+    demoted one severity and tagged so the verdict gate doesn't treat a vite CVE
+    in devDependencies the same as a live-in-production RCE.
+    """
     queries: list[dict[str, Any]] = []
+    query_deps: list[DependencySummary] = []
     for d in deps:
         if not d.version:
             continue
-        ecosystem = "npm" if d.ecosystem == "npm" else "PyPI"
+        eco = _OSV_ECOSYSTEM.get(d.ecosystem)
+        if eco is None:
+            continue
         queries.append(
             {
-                "package": {"name": d.name, "ecosystem": ecosystem},
+                "package": {"name": d.name, "ecosystem": eco},
                 "version": _clean_version(d.version),
             }
         )
+        query_deps.append(d)
     if not queries:
         return [], "OSV: no version-pinned deps to query."
     try:
@@ -97,24 +124,41 @@ async def _osv_query(deps: list[DependencySummary]) -> tuple[list[Finding], str]
     except (httpx.HTTPError, ValueError):
         return [], "OSV: query failed (network or parse error)."
     findings: list[Finding] = []
-    for query, dep_result in zip(queries, data.get("results", [])):
+    for dep, query, dep_result in zip(query_deps, queries, data.get("results", [])):
         vulns = dep_result.get("vulns") or []
         if not vulns:
             continue
         name = query["package"]["name"]
         version = query["version"]
+        is_dev = dep.scope in ("dev", "optional", "peer")
+        scope_tag = f" [{dep.scope}-only]" if is_dev else ""
         for v in vulns:
             sev = _max_osv_severity(v)
+            if is_dev:
+                sev = _demote(sev)
             findings.append(
                 Finding(
                     rule_id=f"OSV-{v.get('id', 'UNKNOWN')}",
-                    title=f"Known vulnerability in {name}=={version}",
+                    title=f"Known vulnerability in {name}=={version}{scope_tag}",
                     category=Category.DEPENDENCY_VULN,
                     severity=sev,
                     confidence=Confidence.CONFIRMED,
-                    description=v.get("summary") or v.get("details", "") or "",
+                    description=(
+                        (v.get("summary") or v.get("details", "") or "")
+                        + (
+                            f"\n\nScope: {dep.scope}. This dependency is not loaded at runtime "
+                            "by consumers of this package; impact is limited to build/CI environments."
+                            if is_dev
+                            else ""
+                        )
+                    ),
                     remediation="Upgrade the dependency to a patched version.",
-                    evidence=[Evidence(location=f"dependencies/{name}", extra={"version": version})],
+                    evidence=[
+                        Evidence(
+                            location=f"dependencies/{name}",
+                            extra={"version": version, "scope": dep.scope},
+                        )
+                    ],
                     cwe=list({f"CWE-{w}" for w in _osv_cwes(v)}),
                     references=[r.get("url", "") for r in v.get("references", [])][:5],
                 )

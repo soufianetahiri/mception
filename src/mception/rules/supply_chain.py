@@ -234,6 +234,14 @@ class DependencySummary:
     version: str | None
     ecosystem: str  # "npm" | "pypi" | "go" | "crates"
     spec_raw: str | None = None  # original version spec incl. operator ("^1.2.3", "==2.0")
+    # Dependency scope relative to the shipped runtime artifact.
+    #   "runtime"  — reachable from the published entrypoint at install/run time
+    #   "dev"      — dev/test/build tooling; not loaded at runtime
+    #   "optional" — optional runtime (may or may not install)
+    #   "peer"     — peer dependency (declared but not resolved by this package)
+    # Ecosystem-agnostic: populated by each manifest parser from its native marker
+    # (npm devDependencies, Cargo [dev-dependencies], pyproject dev groups, go.mod test-only, …).
+    scope: str = "runtime"
 
 
 # ---------- manifest parsing ----------
@@ -248,7 +256,13 @@ def parse_manifests(workdir: Path) -> tuple[list[DependencySummary], dict]:
         try:
             data = json.loads(pkg.read_text(encoding="utf-8"))
             info["package_json"] = data
-            for sec in ("dependencies", "devDependencies", "optionalDependencies"):
+            _npm_scope_map = {
+                "dependencies": "runtime",
+                "devDependencies": "dev",
+                "optionalDependencies": "optional",
+                "peerDependencies": "peer",
+            }
+            for sec, scope in _npm_scope_map.items():
                 for name, spec in (data.get(sec) or {}).items():
                     spec_s = str(spec)
                     # For npm, "version" (clean) and "spec_raw" are the same string.
@@ -258,6 +272,7 @@ def parse_manifests(workdir: Path) -> tuple[list[DependencySummary], dict]:
                             version=spec_s,
                             spec_raw=spec_s,
                             ecosystem="npm",
+                            scope=scope,
                         )
                     )
         except json.JSONDecodeError:
@@ -288,10 +303,36 @@ def parse_manifests(workdir: Path) -> tuple[list[DependencySummary], dict]:
     pyproj = workdir / "pyproject.toml"
     if pyproj.exists():
         info["pyproject_toml_raw"] = pyproj.read_text(encoding="utf-8", errors="replace")
+        raw = info["pyproject_toml_raw"]
+        # Locate TOML table headers so each dep can be tagged with its scope.
+        # Runtime:  [project] / [project.dependencies], [tool.poetry.dependencies]
+        # Dev:      [tool.poetry.group.*.dependencies], [dependency-groups], [project.optional-dependencies.<test|dev|…>]
+        table_hits: list[tuple[int, str]] = []  # (start_pos, table_name)
+        for h in re.finditer(r"^\s*\[([^\]]+)\]", raw, re.MULTILINE):
+            table_hits.append((h.start(), h.group(1).strip()))
+
+        def _scope_for_pos(pos: int) -> str:
+            # Find the latest table header at or before this position.
+            current = ""
+            for hp, name in table_hits:
+                if hp <= pos:
+                    current = name
+                else:
+                    break
+            low = current.lower()
+            # Any dev/test/build/lint group in poetry / PEP 735 dependency-groups.
+            if "group." in low and ("dev" in low or "test" in low or "lint" in low or "doc" in low):
+                return "dev"
+            if low == "dependency-groups" or low.startswith("dependency-groups."):
+                return "dev"
+            if "optional-dependencies" in low:
+                return "optional"
+            return "runtime"
+
         # Capture full spec string (incl. operator) from quoted dep entries.
         for m in re.finditer(
             r'["\']([A-Za-z0-9_.\-]+)\s*((?:[<>=!~]=?\s*[A-Za-z0-9_.\-]+)?)["\']',
-            info["pyproject_toml_raw"],
+            raw,
         ):
             spec_raw = (m.group(2) or "").strip() or None
             version = re.search(r"[A-Za-z0-9_.\-]+$", spec_raw).group(0) if spec_raw else None
@@ -301,6 +342,7 @@ def parse_manifests(workdir: Path) -> tuple[list[DependencySummary], dict]:
                     version=version,
                     spec_raw=spec_raw,
                     ecosystem="pypi",
+                    scope=_scope_for_pos(m.start()),
                 )
             )
 
@@ -328,7 +370,12 @@ def parse_manifests(workdir: Path) -> tuple[list[DependencySummary], dict]:
         info["cargo_toml_raw"] = cargo.read_text(encoding="utf-8", errors="replace")
         # Top-level [dependencies] + [dev-dependencies] — simple tomls only.
         raw = info["cargo_toml_raw"]
-        for block_name in ("[dependencies]", "[dev-dependencies]", "[build-dependencies]"):
+        _cargo_scope_map = {
+            "[dependencies]": "runtime",
+            "[dev-dependencies]": "dev",
+            "[build-dependencies]": "dev",  # build-time only; not shipped at runtime
+        }
+        for block_name, scope in _cargo_scope_map.items():
             idx = raw.find(block_name)
             if idx < 0:
                 continue
@@ -346,6 +393,7 @@ def parse_manifests(workdir: Path) -> tuple[list[DependencySummary], dict]:
                         version=m.group(2),
                         spec_raw=m.group(2),
                         ecosystem="crates",
+                        scope=scope,
                     )
                 )
             # 2) `name = { version = "1.2.3", ... }`
@@ -360,6 +408,7 @@ def parse_manifests(workdir: Path) -> tuple[list[DependencySummary], dict]:
                         version=m.group(2),
                         spec_raw=m.group(2),
                         ecosystem="crates",
+                        scope=scope,
                     )
                 )
 
@@ -620,52 +669,93 @@ _NPM_UNPINNED_RX = re.compile(r"^(?:[\^~>]|>=|\*|latest$|file:|git\+|github:|htt
 
 
 def rule_unpinned_versions(deps: list[DependencySummary], info: dict) -> Iterable[Finding]:
-    """Flag dependency specs that aren't pinned to an exact version."""
-    bad: list[tuple[str, str]] = []
-    for d in deps:
+    """Flag dependency specs that aren't pinned to an exact version.
+
+    Splits by scope: runtime unpins are the actual supply-chain risk (medium);
+    dev/build unpins are reported at info level so they don't drive the verdict.
+    """
+    def _is_unpinned(d: DependencySummary) -> bool:
         spec = (d.spec_raw or d.version or "").strip()
         if not spec:
-            continue
+            return False
         if d.ecosystem == "npm":
-            # "^1.2.3" / "~1.0" / ">=1.0.0" / "latest" / "git+…" / "file:…" are all floating.
-            if _NPM_UNPINNED_RX.match(spec):
-                bad.append((d.name, spec))
-        else:  # pypi
-            # An exact pin in pip specifiers is "==1.2.3". Anything else floats.
-            if not spec.startswith("=="):
-                bad.append((d.name, spec))
-    if not bad:
-        return []
-    sample = ", ".join(f"{n}@{v}" for n, v in bad[:6])
-    more = f" (+{len(bad) - 6} more)" if len(bad) > 6 else ""
-    return [
-        Finding(
+            return bool(_NPM_UNPINNED_RX.match(spec))
+        if d.ecosystem == "pypi":
+            return not spec.startswith("==")
+        # Go modules in go.mod are always pinned; crates specs typically float by default.
+        if d.ecosystem == "crates":
+            return not spec.startswith("=")
+        return False
+
+    runtime_bad: list[tuple[str, str]] = []
+    dev_bad: list[tuple[str, str]] = []
+    for d in deps:
+        if not _is_unpinned(d):
+            continue
+        entry = (d.name, (d.spec_raw or d.version or "").strip())
+        if d.scope in ("dev", "optional", "peer"):
+            dev_bad.append(entry)
+        else:
+            runtime_bad.append(entry)
+
+    out: list[Finding] = []
+
+    def _mk(scope_label: str, bad: list[tuple[str, str]], severity: Severity) -> Finding:
+        sample = ", ".join(f"{n}@{v}" for n, v in bad[:6])
+        more = f" (+{len(bad) - 6} more)" if len(bad) > 6 else ""
+        return Finding(
             rule_id="MCP-SUP-005",
-            title="Floating dependency ranges reduce integrity",
+            title=f"Floating {scope_label} dependency ranges reduce integrity",
             category=Category.SUPPLY_CHAIN,
-            severity=Severity.MEDIUM,
+            severity=severity,
             confidence=Confidence.CONFIRMED,
             description=(
-                f"{len(bad)} dependency spec(s) are not pinned to an exact version: "
-                f"{sample}{more}. A compromised registry can ship a new patch version "
-                "under a range spec and every install picks it up."
+                f"{len(bad)} {scope_label} dependency spec(s) are not pinned: "
+                f"{sample}{more}. "
+                + (
+                    "A compromised registry can ship a new patch version under a range spec "
+                    "and every install picks it up."
+                    if scope_label == "runtime"
+                    else "Dev/build dependencies are not loaded at runtime by consumers, so the "
+                    "supply-chain blast radius is limited to contributor machines and CI."
+                )
             ),
             remediation=(
-                "Pin exact versions (`1.2.3` in npm, `==1.2.3` in pip) and commit a "
-                "lockfile with integrity hashes."
+                "Pin exact versions (`1.2.3` in npm, `==1.2.3` in pip, `=1.2.3` in Cargo) "
+                "and commit a lockfile with integrity hashes."
             ),
-            evidence=[Evidence(location="dependencies", extra={"unpinned": bad[:40]})],
+            evidence=[
+                Evidence(location=f"dependencies({scope_label})", extra={"unpinned": bad[:40]})
+            ],
             cwe=["CWE-494"],
             owasp_mcp="MCP04:2025",
             references=[
                 "https://owasp.org/www-project-mcp-top-10/2025/MCP04-2025%E2%80%93Software-Supply-Chain-Attacks&Dependency-Tampering",
             ],
         )
-    ]
+
+    if runtime_bad:
+        out.append(_mk("runtime", runtime_bad, Severity.MEDIUM))
+    if dev_bad:
+        out.append(_mk("dev/build", dev_bad, Severity.INFO))
+    return out
 
 
-def rule_no_lockfile(workdir: Path, deps: list[DependencySummary]) -> Iterable[Finding]:
-    """If a manifest declares deps but no lockfile is present, integrity is not guaranteed."""
+def rule_no_lockfile(
+    workdir: Path,
+    deps: list[DependencySummary],
+    target_kind: str | None = None,
+) -> Iterable[Finding]:
+    """If a manifest declares deps but no lockfile is present, integrity is not guaranteed.
+
+    Skipped for registry-artifact targets (npm tarball, PyPI sdist/wheel, crate, gem):
+    those package formats strip lockfiles on publish by design, so their absence is
+    not a signal about the maintainer's integrity practices.
+    """
+    # Registry artifacts don't ship lockfiles; flagging them is a context-inappropriate FP.
+    if target_kind in ("npm", "pypi", "crates", "rubygems"):
+        return []
+
     has_npm_deps = any(d.ecosystem == "npm" for d in deps)
     has_py_deps = any(d.ecosystem == "pypi" for d in deps)
     findings: list[Finding] = []

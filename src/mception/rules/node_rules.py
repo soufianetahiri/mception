@@ -16,6 +16,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from ..findings import Category, Confidence, Evidence, Finding, Severity
+from .surface import classify_surface
 
 NODE_EXTS = (".js", ".mjs", ".cjs", ".ts", ".tsx")
 _SKIP_DIRS = {
@@ -60,9 +61,29 @@ def _relocate(path: Path, workdir: Path) -> str:
 
 # ---------- rule: command injection / dynamic exec ----------
 
-# Match child_process APIs with any argument. We'll check the first arg shape.
+# Match child_process APIs. Two forms:
+#   (a) `child_process.exec(...)` / `require("child_process").exec(...)` / `cp.exec(...)`  — captured with prefix
+#   (b) bare `exec(...)` — only flag when an import binding to node's child_process exists
+# The `(?<![.\w])` lookbehind kills the classic FP: `regex.exec(str)` (RegExp.prototype.exec),
+# `someMatcher.exec(...)`, `foo_exec(...)`, etc.
+_EXEC_FN_NAMES = "exec|execSync|execFile|execFileSync|spawn|spawnSync"
 _EXEC_FN_RX = re.compile(
-    r"\b(?:child_process\s*\.\s*)?(exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(",
+    rf"(?<![.\w])(?:(?P<prefix>child_process\s*\.\s*))?(?P<fn>{_EXEC_FN_NAMES})\s*\(",
+)
+# Detect whether the file binds any of those names from node's child_process module.
+# Covers: ESM named imports, CJS destructured require, namespace imports, and default require.
+_CP_BINDING_RX = re.compile(
+    r"""(?x)
+    # import { exec, spawn, ... } from 'node:child_process' | 'child_process'
+    import\s*\{[^}]*\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\b[^}]*\}\s*
+        from\s*['"](?:node:)?child_process['"]
+    |
+    # import cp from 'child_process'  — namespace / default
+    import\s+(?:\*\s+as\s+)?[A-Za-z_$][\w$]*\s+from\s*['"](?:node:)?child_process['"]
+    |
+    # const { exec, spawn } = require('child_process')
+    require\s*\(\s*['"](?:node:)?child_process['"]\s*\)
+    """
 )
 _SHELL_TRUE_RX = re.compile(r"\{\s*[^{}]*\bshell\s*:\s*true\b[^{}]*\}", re.DOTALL)
 # Detect template-string or concatenation first-arg patterns (used after the `(`).
@@ -71,8 +92,18 @@ _DYNAMIC_STR_RX = re.compile(r"""[`'"][^`'"]*\$\{|[`'"][^`'"]*\+|\+\s*[a-zA-Z_]"
 
 def node_rule_command_injection(path: Path, src: str, workdir: Path) -> Iterable[Finding]:
     findings: list[Finding] = []
+    has_cp_binding = bool(_CP_BINDING_RX.search(src))
+    surface = classify_surface(path, src, workdir)
+    # child_process doesn't exist in a host-managed sandbox — any `exec`/`spawn`
+    # reference is either dead code or targeting a non-Node runtime. Suppress.
+    if surface == "sandbox":
+        return findings
     for m in _EXEC_FN_RX.finditer(src):
-        fn = m.group(1)
+        fn = m.group("fn")
+        # Bare `exec(...)` with no import binding to child_process → almost certainly
+        # a different `exec` (regex global, custom helper). Skip to avoid FP.
+        if not m.group("prefix") and not has_cp_binding:
+            continue
         start = m.end()
         # Peek into the first arg up to the matching close.
         arg = _first_call_arg(src, start)
@@ -165,7 +196,7 @@ def _first_call_arg(src: str, start: int) -> str | None:
 
 _EVAL_RX = re.compile(
     r"""(?x)
-    \b(
+    (?<![.\w])(
         eval\s*\(
       | new\s+Function\s*\(
       | vm\s*\.\s*runIn(?:This|New)Context\s*\(
@@ -177,16 +208,49 @@ _EVAL_RX = re.compile(
 
 def node_rule_eval(path: Path, src: str, workdir: Path) -> Iterable[Finding]:
     out: list[Finding] = []
+    surface = classify_surface(path, src, workdir)
+    # In a host-managed sandbox (plugin, browser extension, editor extension,
+    # edge isolate) `eval`/`Function` runs inside the sandbox, not on the user's
+    # OS. It's still dangerous capability, but it's not the same as RCE on a
+    # long-lived Node server — many of these runtimes use eval as their
+    # intended extension mechanism. Build-tool configs execute on the
+    # developer's machine at CI time, narrower blast radius than prod.
+    if surface == "sandbox":
+        sev, conf, surface_note = (
+            Severity.MEDIUM,
+            Confidence.SUSPECTED,
+            " (sandbox surface — evaluated inside host-managed runtime, not a user OS process)",
+        )
+    elif surface == "build":
+        sev, conf, surface_note = (
+            Severity.LOW,
+            Confidence.SUSPECTED,
+            " (build-time config — runs only during bundling/tests)",
+        )
+    else:
+        sev, conf, surface_note = Severity.CRITICAL, Confidence.LIKELY, ""
     for m in _EVAL_RX.finditer(src):
         out.append(
             Finding(
                 rule_id="NODE-CMDI-002",
-                title=f"Dynamic code execution via {m.group(1).strip()}",
+                title=f"Dynamic code execution via {m.group(1).strip()}{surface_note}",
                 category=Category.COMMAND_INJECTION,
-                severity=Severity.CRITICAL,
-                confidence=Confidence.LIKELY,
+                severity=sev,
+                confidence=conf,
                 description=(
                     "Runtime evaluation APIs give any untrusted argument full code-exec authority."
+                    + (
+                        "\n\nExecution surface: " + surface + ". "
+                        + (
+                            "Code runs inside the host's managed runtime (plugin/extension/isolate), "
+                            "so a malicious argument cannot spawn processes or touch the filesystem "
+                            "directly — but it can still abuse the sandbox's own API surface."
+                            if surface == "sandbox"
+                            else "Config file executes at build/test time on developer or CI machines."
+                            if surface == "build"
+                            else ""
+                        )
+                    )
                 ),
                 remediation=(
                     "Remove. If a sandbox is genuinely needed, use isolated-vm or a proper "
