@@ -1,5 +1,10 @@
 # mception
 
+<!-- MCP registry ownership attestation — required by registry.modelcontextprotocol.io
+     to cross-verify that the publisher of this PyPI package also controls the
+     io.github.soufianetahiri/* namespace. Do not remove. -->
+mcp-name: io.github.soufianetahiri/mception
+
 **An MCP server that audits other MCP servers for security risks.**
 
 Give it a target — a local path, `pypi:…` package, `npm:…` package, `git+…`
