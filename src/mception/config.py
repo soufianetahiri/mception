@@ -29,6 +29,9 @@ class Settings(BaseModel):
     introspect_timeout_s: int = int(os.environ.get("MCEPTION_INTROSPECT_TIMEOUT", "60"))
     # Whether fetchers are allowed to reach the network (npm/pypi/git).
     offline_mode: bool = _env_bool("MCEPTION_OFFLINE", False)
+    # Filename (relative to the target workdir) of the per-target suppression
+    # policy. See `src/mception/engines/baseline.py:load_suppressions`.
+    suppressions_filename: str = os.environ.get("MCEPTION_SUPPRESSIONS_FILE", ".mception.yml")
 
     def ensure_data_dir(self) -> Path:
         self.data_dir.mkdir(parents=True, exist_ok=True)

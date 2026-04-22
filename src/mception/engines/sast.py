@@ -11,6 +11,7 @@ from pathlib import Path
 from ..findings import Category, Confidence, Evidence, Finding, Severity
 from ..rules.code_rules import (
     CodeContext,
+    collect_import_bindings,
     collect_params,
     iter_tool_handlers,
     rule_command_injection,
@@ -23,8 +24,13 @@ from ..rules.code_rules import (
 )
 from ..rules.go_rules import GO_EXTS, _go_sources, scan_go_file
 from ..rules.node_rules import NODE_EXTS, _node_sources, scan_node_file
+from ..rules.ruby_rules import RUBY_EXTS, _ruby_sources, scan_ruby_file
 from ..rules.rust_rules import RUST_EXTS, _rust_sources, scan_rust_file
+from ..rules.surface import classify_surface
 from .base import EngineResult, TargetContext
+
+# TODO: Java SAST rules (Spring / Gradle / Maven surface) deferred — too much
+# framework surface for the current tranche.
 
 
 class SASTEngine:
@@ -48,6 +54,9 @@ class SASTEngine:
             scanned += 1
             # Module-level rules (once per file).
             findings.extend(rule_env_dump(tree, target_ctx.workdir, path))
+            # File-level gating context reused across every tool-handler ctx.
+            bindings = collect_import_bindings(tree)
+            surface = classify_surface(path, src, target_ctx.workdir)
             # Tool-handler rules.
             for fn in iter_tool_handlers(tree):
                 ctx = CodeContext(
@@ -55,6 +64,8 @@ class SASTEngine:
                     source_file=path,
                     func_node=fn,
                     param_names=collect_params(fn),
+                    bindings=bindings,
+                    surface=surface,
                 )
                 findings.extend(rule_unsafe_deserialization(ctx))
                 findings.extend(rule_command_injection(ctx))
@@ -99,6 +110,18 @@ class SASTEngine:
             rust_count += 1
             findings.extend(scan_rust_file(path, src, target_ctx.workdir))
 
+        # Ruby.
+        ruby_count = 0
+        for path in _ruby_sources(target_ctx.workdir):
+            try:
+                src = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if len(src) > 2_000_000:
+                continue
+            ruby_count += 1
+            findings.extend(scan_ruby_file(path, src, target_ctx.workdir))
+
         # Optional external Bandit sweep; skipped silently if not installed.
         bandit_findings = _run_bandit(target_ctx.workdir)
         findings.extend(bandit_findings)
@@ -106,7 +129,7 @@ class SASTEngine:
         result.findings = findings
         result.notes.append(
             f"SAST scanned {scanned} py / {node_count} js-ts / {go_count} go / "
-            f"{rust_count} rs files; emitted {len(findings)} findings "
+            f"{rust_count} rs / {ruby_count} rb files; emitted {len(findings)} findings "
             f"({'bandit available' if bandit_findings or shutil.which('bandit') else 'bandit not installed; skipped'})."
         )
         return result

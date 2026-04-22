@@ -1,0 +1,32 @@
+# Sample `.mception.yml` — drop this file at the root of the repo you audit.
+# mception parses it during `run_audit` and moves matching findings to
+# `report.suppressed_findings` instead of scoring them.
+#
+# A finding is suppressed when ALL of the keys you specify match. Every key is
+# optional, but at least one must be set — an empty entry is ignored.
+
+suppressions:
+  # 1) Suppress a specific rule under a specific path subtree.
+  #    `rule_id` is an fnmatch glob; `path` is a pathlib glob matched against
+  #    the first evidence `location` (the `:line` suffix is stripped first).
+  - rule_id: NODE-CMDI-002
+    path: "figma-desktop-bridge/**"
+    reason: "eval in Figma plugin sandbox — accepted risk, runs inside host"
+
+  # 2) Suppress an entire rule family for one dependency.
+  #    `dependency` only applies to `dependency_vuln` findings and matches the
+  #    location `dependencies/<name>` exactly (also glob-friendly).
+  - rule_id: "OSV-*"
+    dependency: vite
+    reason: "dev-only build tool; CVEs tracked in the weekly scan, not release-blocking"
+
+  # 3) Suppress by category + scope — useful to silence all dev-scope OSV noise.
+  #    `category` matches `Finding.category.value` exactly; `scope` matches
+  #    `evidence[0].extra.scope` (dev / optional / peer / runtime).
+  - category: dependency_vuln
+    scope: dev
+    reason: "dev-only CVEs tracked in weekly scan, not release-blocking"
+
+  # 4) Suppress a single rule id globally across the repo.
+  - rule_id: MCP-PROV-001
+    reason: "license ships in the parent monorepo, not per-package"

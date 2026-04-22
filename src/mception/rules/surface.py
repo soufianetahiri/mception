@@ -41,6 +41,32 @@ Detection is layered:
      ``Deno.``, ``WebAssembly.``). We don't enumerate vendors exhaustively —
      just require a minimum density and bare-global pattern.
 
+Python and Go additions
+-----------------------
+
+Beyond the original JS / TS / Node / browser-extension manifests, the
+classifier also recognizes:
+
+  * **Python sandbox signals**
+      - ``jupyter_notebook_config.py`` anywhere in the tree marks files under
+        its directory as ``sandbox`` — the notebook kernel is a host-managed
+        Python runtime where ``subprocess`` is frequently unreachable or
+        heavily restricted.
+      - ``pyodide-build.yaml`` manifests, or files with ``import pyodide`` /
+        ``import js`` (the Pyodide <-> browser bridge) are treated as
+        ``sandbox``: code executes inside the browser's WebAssembly isolate.
+      - Host-global access density counts the Pyodide/IPython/Colab surface
+        (``js.``, ``pyodide.``, ``IPython.``, ``google.colab.``).
+
+  * **Go sandbox signals**
+      - ``go.mod`` modules whose path contains ``tinygo`` → sandbox (TinyGo
+        targets embedded/WASM runtimes without a full OS surface).
+      - Files with a ``//go:build js`` or ``//go:build wasm`` constraint line
+        (or the legacy ``// +build js`` / ``// +build wasm``) → sandbox.
+
+The existing Node/JS detection and the ``server`` / ``build`` / ``unknown``
+buckets are untouched.
+
 No file content is persisted; the classifier is called per-file during SAST.
 """
 
@@ -81,7 +107,12 @@ _BUILD_FILENAMES: set[str] = {
 # certainly executing in that host's sandbox. We don't hardcode which global —
 # the pattern captures any identifier, and the threshold filters noise.
 _HOST_GLOBAL_RX = re.compile(
-    r"\b(figma|chrome|browser|vscode|Deno|WebAssembly|browserAction|runtime)"
+    r"\b(figma|chrome|browser|vscode|Deno|WebAssembly|browserAction|runtime"
+    # Python host globals. ``pyodide`` and ``IPython`` are distinctive enough
+    # to count even in mixed-language trees; ``js`` and ``google`` are too
+    # common as filename / domain substrings and are handled by the Pyodide
+    # bridge content-signal instead.
+    r"|pyodide|IPython)"
     r"\s*\.\s*[A-Za-z_$][\w$]*",
 )
 # Density threshold: this many distinct host-global accesses in one file makes
@@ -136,6 +167,29 @@ def _workdir_manifest_surfaces(workdir: Path) -> tuple[tuple[str, Surface], ...]
     for wr in list(workdir.rglob("wrangler.toml")) + list(workdir.rglob("wrangler.jsonc")):
         out.append((str(wr.parent), "sandbox"))
 
+    # Python: Pyodide build manifest → sandbox for everything under it.
+    for py_sb in list(workdir.rglob("pyodide-build.yaml")) + list(
+        workdir.rglob("pyodide-build.yml")
+    ):
+        out.append((str(py_sb.parent), "sandbox"))
+
+    # Python: presence of a jupyter_notebook_config.py marks the tree as a
+    # kernel-hosted sandbox.
+    for jup in workdir.rglob("jupyter_notebook_config.py"):
+        out.append((str(jup.parent), "sandbox"))
+
+    # Go: go.mod whose module path mentions tinygo → sandbox (WASM/TinyGo).
+    for gm in workdir.rglob("go.mod"):
+        try:
+            text = gm.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("module ") and "tinygo" in stripped.lower():
+                out.append((str(gm.parent), "sandbox"))
+                break
+
     # Deno runtime: deno.json / deno.jsonc signals deno deploy if it has a task
     # named "deploy" or a "deploy" section. Bare deno.json is still server.
     for dj in list(workdir.rglob("deno.json")) + list(workdir.rglob("deno.jsonc")):
@@ -167,7 +221,17 @@ def classify_surface(path: Path, src: str, workdir: Path) -> Surface:
     except (OSError, ValueError):
         pass
 
-    # 3) Content signal: dense use of a host-managed global.
+    # 3) Language-specific content signals.
+    # Python: Pyodide bridge imports are a strong sandbox indicator.
+    if path.suffix == ".py":
+        if _PYODIDE_BRIDGE_RX.search(src):
+            return "sandbox"
+    # Go: //go:build js|wasm constraint (or legacy // +build js|wasm).
+    if path.suffix == ".go":
+        if _GO_WASM_BUILD_RX.search(src):
+            return "sandbox"
+
+    # 4) Content signal: dense use of a host-managed global.
     hits = set()
     for m in _HOST_GLOBAL_RX.finditer(src):
         hits.add(m.group(0))
@@ -175,3 +239,27 @@ def classify_surface(path: Path, src: str, workdir: Path) -> Surface:
             return "sandbox"
 
     return "unknown"
+
+
+# Python Pyodide bridge: either `import pyodide` / `from pyodide ...`, or
+# `import js` (the Pyodide-provided browser bridge — in normal CPython code
+# `import js` would just ImportError).
+_PYODIDE_BRIDGE_RX = re.compile(
+    r"""(?mx)
+    ^\s*(?:
+        import\s+pyodide\b
+      | from\s+pyodide(?:\.[\w.]+)?\s+import\s+
+      | import\s+js\b
+      | from\s+js\s+import\s+
+    )
+    """,
+)
+
+# Go build constraints that target WASM / JS runtimes. Matches both the new
+# ``//go:build js`` / ``//go:build wasm`` form (possibly ANDed with others)
+# and the legacy ``// +build js`` / ``// +build wasm``.
+_GO_WASM_BUILD_RX = re.compile(
+    r"""(?mx)
+    ^\s*//\s*(?:go:build|\+build)\s+[^\n]*\b(?:js|wasm)\b
+    """,
+)

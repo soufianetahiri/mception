@@ -12,6 +12,7 @@ from ..report import AuditReport
 from ..scoring import score_findings
 from ..storage import audit_id_for, save_report
 from .base import Engine, EngineResult, TargetContext
+from .baseline import load_suppressions, suppress_findings
 from .fetcher import FetchError, detect_kind, fetch
 from .metadata import MetadataEngine
 from .sast import SASTEngine
@@ -97,7 +98,22 @@ async def run_audit(
         inconclusive = True
         notes.append("No engines configured for this profile.")
 
-    score = score_findings(all_findings, inconclusive=inconclusive)
+    # Per-rule + per-path suppressions from `.mception.yml` at the workdir root.
+    # Suppressed findings are preserved on the report for audit trail but are
+    # removed from the scoring input and from the main `findings` list.
+    suppressions = load_suppressions(workdir) if workdir is not None else []
+    kept_findings, suppressed = suppress_findings(all_findings, suppressions)
+
+    score = score_findings(kept_findings, inconclusive=inconclusive)
+    if suppressed:
+        score = score.model_copy(
+            update={
+                "verdict_reason": (
+                    f"{score.verdict_reason} "
+                    f"({len(suppressed)} findings suppressed via .mception.yml)"
+                )
+            }
+        )
 
     report = AuditReport(
         audit_id=audit_id_for(target, profile),
@@ -107,7 +123,8 @@ async def run_audit(
         mception_version=__version__,
         profile=profile,
         score=score,
-        findings=all_findings,
+        findings=kept_findings,
+        suppressed_findings=suppressed,
         notes=notes,
     )
     save_report(report)

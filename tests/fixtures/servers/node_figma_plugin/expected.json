@@ -1,0 +1,5 @@
+{
+  "must_contain": ["NODE-CMDI-002:medium"],
+  "must_not_contain": ["NODE-CMDI-002:critical"],
+  "verdict_not": ["unsafe_to_use"]
+}

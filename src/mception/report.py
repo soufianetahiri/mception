@@ -30,6 +30,7 @@ class AuditReport(BaseModel):
     profile: str
     score: ScoreResult
     findings: list[Finding]
+    suppressed_findings: list[Finding] = []
     notes: list[str] = []
 
     @staticmethod

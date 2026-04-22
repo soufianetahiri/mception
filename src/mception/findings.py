@@ -76,3 +76,11 @@ class Finding(BaseModel):
     target_component: str | None = Field(
         default=None, description="Which tool/resource/file this applies to, if scoped."
     )
+    suppression_reason: str | None = Field(
+        default=None,
+        description=(
+            "If set, this finding was matched by a `.mception.yml` suppression and moved "
+            "to AuditReport.suppressed_findings; the reason is copied from the suppression "
+            "entry for audit trail."
+        ),
+    )

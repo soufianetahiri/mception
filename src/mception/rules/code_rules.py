@@ -11,6 +11,21 @@ Strategy (deliberately simple, not full taint):
     subprocess with shell=True and a non-literal command) are Confirmed in that they
     *are* in the code — severity set by category.
 
+False-positive gates layered on top of the core AST walk:
+
+  - **Import-binding tracker**: bare calls like ``loads(x)`` / ``system(x)`` /
+    ``run(x)`` only match a dangerous-sink rule if the module that owns the
+    name is actually imported in this file (``from pickle import loads`` etc).
+    Prevents FPs where an unrelated local helper named ``loads`` / ``system``
+    shadows a stdlib name. Qualified calls (``pickle.loads``) still match
+    directly via ``_callee_chain``.
+  - **Surface gating**: the execution surface of the source file (from
+    ``rules.surface.classify_surface``) demotes or suppresses findings in
+    contexts where the sink's blast radius is narrower: ``sandbox`` surfaces
+    (Pyodide, IPython kernel bridge) suppress subprocess/os.system findings;
+    ``build`` surfaces demote eval/exec to LOW. ``server``/``unknown`` keep
+    the full severity.
+
 Scope: Python only. Covers Python-implemented MCP servers (a very common case).
 """
 
@@ -18,10 +33,73 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..findings import Category, Confidence, Evidence, Finding, Severity
+from .surface import classify_surface
+
+
+# Modules whose members we track when they show up as bare-name calls.
+# key: module name, value: set of member names worth gating on.
+_TRACKED_MODULE_MEMBERS: dict[str, set[str]] = {
+    "subprocess": {"run", "call", "check_call", "check_output", "Popen",
+                   "getoutput", "getstatusoutput"},
+    "os": {"system", "popen"},
+    "pickle": {"loads", "load"},
+    "marshal": {"loads", "load"},
+    "yaml": {"load", "unsafe_load"},
+    "shelve": {"open"},
+}
+
+
+@dataclass
+class ImportBindings:
+    """Module-level import resolution for a source file.
+
+    * ``module_aliases``: for each tracked module, the local names that bind
+      to it (``import subprocess`` → ``{"subprocess"}``;
+      ``import subprocess as sp`` → ``{"sp"}``).
+    * ``from_imports``: bare-name bindings. Key is the local name
+      (e.g. ``loads``), value is the originating tracked module
+      (``pickle``).
+    """
+
+    module_aliases: dict[str, set[str]] = field(default_factory=dict)
+    from_imports: dict[str, str] = field(default_factory=dict)
+
+    def module_for_bare(self, name: str) -> str | None:
+        """If ``name`` was imported from a tracked module, return the module."""
+        return self.from_imports.get(name)
+
+    def is_module_alias(self, name: str, module: str) -> bool:
+        """Is ``name`` a local alias of the tracked module ``module``?"""
+        return name in self.module_aliases.get(module, set())
+
+
+def collect_import_bindings(tree: ast.AST) -> ImportBindings:
+    """Walk a module AST and build an ImportBindings for the tracked modules."""
+    b = ImportBindings()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                mod = alias.name  # e.g. "subprocess", "os.path"
+                # Track top-level module name only (we care about "os" for os.system).
+                top = mod.split(".")[0]
+                if top in _TRACKED_MODULE_MEMBERS:
+                    local = alias.asname or mod.split(".")[0]
+                    b.module_aliases.setdefault(top, set()).add(local)
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            top = mod.split(".")[0]
+            if top not in _TRACKED_MODULE_MEMBERS:
+                continue
+            members = _TRACKED_MODULE_MEMBERS[top]
+            for alias in node.names:
+                if alias.name in members:
+                    local = alias.asname or alias.name
+                    b.from_imports[local] = top
+    return b
 
 
 @dataclass
@@ -30,6 +108,8 @@ class CodeContext:
     source_file: Path
     func_node: ast.FunctionDef | ast.AsyncFunctionDef
     param_names: set[str]
+    bindings: ImportBindings = field(default_factory=ImportBindings)
+    surface: str = "unknown"
 
     def loc(self, node: ast.AST) -> str:
         rel = _safe_relpath(self.source_file, self.workdir)
@@ -87,6 +167,39 @@ def _callee_chain(node: ast.expr) -> str | None:
         parts.append(cur.id)
         return ".".join(reversed(parts))
     return None
+
+
+def _resolve_chain(node: ast.expr, bindings: ImportBindings) -> str | None:
+    """Resolve a call expression to a canonical 'module.member' chain.
+
+    Uses *bindings* to normalize bare names (``loads`` → ``pickle.loads`` if
+    the file has ``from pickle import loads``) and module aliases
+    (``sp.run`` → ``subprocess.run`` when ``import subprocess as sp``).
+    Returns None when the callee is not a Name/Attribute or when no binding
+    matches. Builtin names ``eval`` / ``exec`` resolve to themselves (they
+    don't need imports).
+    """
+    raw = _callee_chain(node)
+    if raw is None:
+        return None
+    parts = raw.split(".")
+    if len(parts) == 1:
+        name = parts[0]
+        # Builtins.
+        if name in ("eval", "exec"):
+            return name
+        mod = bindings.module_for_bare(name)
+        if mod is not None:
+            return f"{mod}.{name}"
+        return None  # bare name with no tracked binding — skip to avoid FPs
+    # Qualified: check whether the head is a tracked-module alias.
+    head, tail = parts[0], parts[1:]
+    for mod, aliases in bindings.module_aliases.items():
+        if head in aliases:
+            return ".".join([mod, *tail])
+    # Fall back to the raw chain (e.g. 'subprocess.run' without alias tracking
+    # still matches its own canonical name).
+    return raw
 
 
 def _kwarg(call: ast.Call, key: str) -> ast.expr | None:
@@ -175,7 +288,7 @@ _PATH_OPEN_ATTRS = {"open", "read_text", "read_bytes", "write_text", "write_byte
 def rule_unsafe_deserialization(ctx: CodeContext) -> Iterable[Finding]:
     out: list[Finding] = []
     for call in _walk_calls(ctx.func_node):
-        chain = _callee_chain(call.func)
+        chain = _resolve_chain(call.func, ctx.bindings)
         if chain not in _UNSAFE_DESER_SINKS:
             continue
         if chain == "yaml.load" and _kwarg(call, "Loader") is not None:
@@ -210,11 +323,20 @@ def rule_unsafe_deserialization(ctx: CodeContext) -> Iterable[Finding]:
 
 def rule_command_injection(ctx: CodeContext) -> Iterable[Finding]:
     out: list[Finding] = []
+    # In a host-managed Python sandbox (Pyodide, IPython kernel bridge in some
+    # MCP bridge contexts) subprocess / os.system aren't reachable: there's no
+    # child process primitive. Suppress shell/subprocess findings entirely.
+    # eval/exec still flag (demoted below if surface == "build") since they
+    # remain an in-sandbox code-exec primitive.
+    in_sandbox = ctx.surface == "sandbox"
+    in_build = ctx.surface == "build"
     for call in _walk_calls(ctx.func_node):
-        chain = _callee_chain(call.func)
+        chain = _resolve_chain(call.func, ctx.bindings)
 
         # os.system / os.popen / subprocess.getoutput — always shell.
         if chain in _SHELL_INJECTION_SINKS:
+            if in_sandbox:
+                continue
             tainted = _any_arg_tainted(call, ctx.param_names)
             conf = Confidence.LIKELY if tainted else Confidence.SUSPECTED
             sev = Severity.CRITICAL if tainted else Severity.HIGH
@@ -229,6 +351,8 @@ def rule_command_injection(ctx: CodeContext) -> Iterable[Finding]:
 
         # subprocess.* with shell=True.
         if chain in _SUBPROCESS_SINKS:
+            if in_sandbox:
+                continue
             shell = _kwarg_bool(call, "shell")
             if shell is True:
                 tainted = _any_arg_tainted(call, ctx.param_names)
@@ -254,11 +378,27 @@ def rule_command_injection(ctx: CodeContext) -> Iterable[Finding]:
                     )
             continue
 
-        # eval / exec
+        # eval / exec — builtins, no import gating required.
         if chain in _EVAL_SINKS:
             tainted = _any_arg_tainted(call, ctx.param_names)
-            conf = Confidence.CONFIRMED if not tainted else Confidence.LIKELY
-            sev = Severity.CRITICAL if tainted else Severity.HIGH
+            if in_build:
+                # Build / test config: narrower blast radius (runs at CI time
+                # on the developer's machine), demote to LOW/SUSPECTED.
+                sev, conf = Severity.LOW, Confidence.SUSPECTED
+            elif in_sandbox:
+                # Sandboxed Python: still code-exec but inside the host runtime.
+                sev = Severity.MEDIUM
+                conf = Confidence.LIKELY if tainted else Confidence.SUSPECTED
+            elif tainted:
+                sev, conf = Severity.CRITICAL, Confidence.LIKELY
+            else:
+                # Static eval/exec on a non-parameter: demote from HIGH to
+                # MEDIUM unless the arg looks dynamic (concat / f-string).
+                is_dynamic = bool(call.args) and _is_string_concatish(call.args[0])
+                if is_dynamic:
+                    sev, conf = Severity.HIGH, Confidence.SUSPECTED
+                else:
+                    sev, conf = Severity.MEDIUM, Confidence.SUSPECTED
             out.append(
                 _cmdi_finding(
                     ctx, call, chain,

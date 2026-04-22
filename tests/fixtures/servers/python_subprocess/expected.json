@@ -1,0 +1,5 @@
+{
+  "must_contain": ["MCP-CMDI-001:critical"],
+  "must_not_contain": [],
+  "verdict_not": []
+}

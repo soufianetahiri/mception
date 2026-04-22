@@ -1,0 +1,8 @@
+{
+  "name": "Fixture Figma Plugin",
+  "id": "fixture-figma-plugin",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"]
+}

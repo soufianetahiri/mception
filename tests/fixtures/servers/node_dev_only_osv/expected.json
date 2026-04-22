@@ -1,0 +1,5 @@
+{
+  "must_contain": [],
+  "must_not_contain": ["OSV-*:medium", "OSV-*:high", "OSV-*:critical"],
+  "verdict_not": ["unsafe_to_use"]
+}

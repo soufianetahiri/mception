@@ -350,17 +350,49 @@ def parse_manifests(workdir: Path) -> tuple[list[DependencySummary], dict]:
     gomod = workdir / "go.mod"
     if gomod.exists():
         info["go_mod_raw"] = gomod.read_text(encoding="utf-8", errors="replace")
-        for m in re.finditer(
-            r"^\s*([a-zA-Z0-9._/\-]+(?:\.[a-zA-Z0-9._/\-]+)+)\s+v([0-9][\w.\-+]+)",
-            info["go_mod_raw"],
-            re.MULTILINE,
-        ):
+        raw_go = info["go_mod_raw"]
+        # Track retract/exclude blocks — their entries are not real deps. We
+        # detect block openers and skip lines until the matching close paren.
+        # `// test` single-line comments on a require line also opt out.
+        skip_block_kinds = ("retract", "exclude")
+        in_skip_block = False
+        for line in raw_go.splitlines():
+            stripped = line.strip()
+            if in_skip_block:
+                if stripped.startswith(")"):
+                    in_skip_block = False
+                continue
+            if any(
+                stripped.startswith(k + " (") or stripped == k + "("
+                for k in skip_block_kinds
+            ):
+                in_skip_block = True
+                continue
+            # Single-line retract/exclude (no block).
+            if any(stripped.startswith(k + " ") for k in skip_block_kinds):
+                continue
+            # Match a dep line: `  <module-path> v<version>` optionally followed by
+            # a `// indirect` or `// test` comment. Also accepts the single-line
+            # `require <path> v<version>` form (no parenthesised group).
+            m = re.match(
+                r"^\s*(?:require\s+)?([a-zA-Z0-9._/\-]+(?:\.[a-zA-Z0-9._/\-]+)+)\s+v([0-9][\w.\-+]+)"
+                r"(?:\s*//\s*(.*?))?\s*$",
+                line,
+            )
+            if not m:
+                continue
+            comment = (m.group(3) or "").strip().lower()
+            # `// test` comments mark test-only deps; skip entirely.
+            if comment.startswith("test"):
+                continue
+            scope = "dev" if comment.startswith("indirect") else "runtime"
             deps.append(
                 DependencySummary(
                     name=m.group(1),
                     version=m.group(2),
                     spec_raw=f"v{m.group(2)}",
                     ecosystem="go",
+                    scope=scope,
                 )
             )
 

@@ -1,0 +1,5 @@
+{
+  "must_contain": [],
+  "must_not_contain": ["NODE-CMDI-001"],
+  "verdict_not": ["unsafe_to_use"]
+}

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from mception.rules.code_rules import (
     CodeContext,
+    collect_import_bindings,
     collect_params,
     iter_tool_handlers,
     rule_command_injection,
@@ -17,6 +18,7 @@ from mception.rules.code_rules import (
     rule_ssrf,
     rule_unsafe_deserialization,
 )
+from mception.rules.surface import classify_surface
 
 
 def _ctx_from(src: str, tmp_path: Path) -> CodeContext:
@@ -25,7 +27,12 @@ def _ctx_from(src: str, tmp_path: Path) -> CodeContext:
     tree = ast.parse(src)
     fn = next(iter(iter_tool_handlers(tree)))
     return CodeContext(
-        workdir=tmp_path, source_file=f, func_node=fn, param_names=collect_params(fn)
+        workdir=tmp_path,
+        source_file=f,
+        func_node=fn,
+        param_names=collect_params(fn),
+        bindings=collect_import_bindings(tree),
+        surface=classify_surface(f, src, tmp_path),
     )
 
 
