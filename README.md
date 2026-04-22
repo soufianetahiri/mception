@@ -20,23 +20,28 @@ Reports render as **Markdown**, **JSON**, or **SARIF** (for CI / GitHub code sca
 ## Capabilities at a glance
 
 - Fetch targets from npm, PyPI, git, or local directories (safe extraction, zip-slip defended).
-- Static extraction of the MCP surface (tools / resources / prompts / server instructions) across **Python / TypeScript / JavaScript / Go / Rust** — **no code execution**.
+- Static extraction of the MCP surface (tools / resources / prompts / server instructions) across **Python / TypeScript / JavaScript / Go / Rust / Ruby** — **no code execution**.
 - Five detection engines: metadata, SAST, SCA + supply chain, transport/auth, cross-config.
-- 46 mception rules (Python / Node / Go / Rust) + OSV feed + optional Bandit passthrough.
+- 60+ mception rules (Python / Node / Go / Rust / Ruby) + OSV feed + optional Bandit passthrough.
+- **Low false-positive rate** — import-binding trackers per language (no `regex.exec()` flagged as `child_process.exec`), scope-aware dependency analysis (dev-only CVEs don't drive verdicts), and an ecosystem-agnostic surface classifier (eval in a sandboxed plugin ≠ eval in a Node server).
 - Deterministic scoring (same input → same ID → same verdict).
 - Hash-pinned baselines with rug-pull diff (detect silent tool-definition changes).
+- Per-repo suppression via [`.mception.yml`](docs/example.mception.yml) — suppress by rule ID glob, path, dependency, category, or scope. Suppressed findings stay in the report, never silently dropped.
 - Whole-config audit: duplicate tool names across servers, lethal-trifecta composition.
-- Ships as a wheel (`uvx`/`pipx`) and a multi-stage Docker image.
+- Ships as a wheel (`uvx`/`pipx`), a PyInstaller single-file binary, an `.mcpb` Claude Desktop bundle, and a multi-stage Docker image.
 - No API keys required — optional LLM judge uses MCP `sampling/createMessage` so the host agent's own model does classification.
 
 ### Language support
 
-| Language | Extract tools / resources / prompts | Handler SAST | Manifest → SCA |
-| --- | :---: | :---: | :---: |
-| Python | ✅ full AST | ✅ AST + Bandit | `pyproject.toml`, `requirements.txt` |
-| TypeScript / JavaScript | ✅ regex (addTool / tool / addResource / addPrompt / positional / struct) | ✅ regex (cmdi / eval / SSRF / path / yaml / TLS) | `package.json` |
-| Go | ✅ regex (`mcp.NewTool`, `mcp.Tool{}`, `NewResource`, `NewPrompt`) | ✅ regex (cmdi / SSRF / path / deser / bind) | `go.mod` |
-| Rust | ✅ regex (`#[tool(...)]`, `.tool(name, desc)`) | ✅ regex (shell cmd / reqwest) | `Cargo.toml` |
+| Language | Extract tools / resources / prompts | Handler SAST | Import-binding tracker | Manifest → SCA |
+| --- | :---: | :---: | :---: | :---: |
+| Python | ✅ full AST | ✅ AST + Bandit (cmdi / eval / SSRF / path / deser / SQLi / log-leak) | ✅ `subprocess` / `os` / `pickle` / `yaml` / `marshal` | `pyproject.toml`, `requirements.txt` (scope-aware: dev groups / PEP 735 `dependency-groups` / `optional-dependencies`) |
+| TypeScript / JavaScript | ✅ regex (addTool / tool / addResource / addPrompt / positional / struct) | ✅ regex (cmdi / eval / SSRF / path / yaml / TLS) | ✅ `child_process` (ESM named, CJS destructured, namespace) | `package.json` (dev / optional / peer scopes) |
+| Go | ✅ regex (`mcp.NewTool`, `mcp.Tool{}`, `NewResource`, `NewPrompt`) | ✅ regex (cmdi / SSRF / path / deser / plugin / bind) | ✅ `os/exec` / `plugin` / `encoding/gob` alias tracking | `go.mod` (`// indirect` → dev scope) |
+| Rust | ✅ regex (`#[tool(...)]`, `.tool(name, desc)`) | ✅ regex (cmdi / SSRF / deser / unsafe FFI / TLS / path) | ✅ `std::process::Command` import gate | `Cargo.toml` (`[dev-dependencies]` / `[build-dependencies]` scopes) |
+| Ruby | — | ✅ regex (cmdi / eval / deser / SSRF / path / TLS) | ✅ `open-uri` / `Open3` require gate | `Gemfile` — planned |
+
+**Surface classifier.** Every file is classified as `server`, `sandbox`, `build`, or `unknown` before rules fire. Sandbox surfaces (Figma plugin, browser extension, VS Code extension, Cloudflare Worker, Deno Deploy, Pyodide, TinyGo/WASM) demote or suppress sinks that are unreachable in that runtime — generic manifest-shape detection, no vendor names hardcoded.
 
 ---
 
@@ -123,19 +128,30 @@ flowchart TD
 | `MCP-LLM-001` | Metadata | Tool poisoning | LLM judge flagged text as suspicious (advisory, uses MCP sampling — off by default) |
 | `MCP-LLM-002` | Metadata | Tool poisoning | LLM judge flagged text as malicious (advisory) |
 | `MCP-META-001` | Dispatcher | Meta | Fetcher could not resolve target (→ inconclusive verdict) |
-| `NODE-CMDI-001` | SAST (Node) | Command injection | `exec` / `execSync` / `spawn({shell:true})` with template literal or concat argument |
-| `NODE-CMDI-002` | SAST (Node) | Command injection | `eval` / `new Function` / `vm.runIn*Context` / `vm.Script` |
+| `NODE-CMDI-001` | SAST (Node) | Command injection | `exec` / `execSync` / `spawn({shell:true})` — import-binding gated (`regex.exec()` no longer flagged) |
+| `NODE-CMDI-002` | SAST (Node) | Command injection | `eval` / `new Function` / `vm.runIn*Context` / `vm.Script` — demoted to MEDIUM on sandbox surface |
 | `NODE-SSRF-001` | SAST (Node) | SSRF | `fetch` / `axios.*` / `http.get` with dynamic URL and no host-allowlist hint |
 | `NODE-PATH-001` | SAST (Node) | Path traversal | `fs.readFile/writeFile/open…` with dynamic path, no `path.resolve` + `startsWith` guard |
 | `NODE-DES-001` | SAST (Node) | Deserialization | `yaml.load` / `yaml.parseDocument` without explicit SAFE schema |
 | `NODE-AUTH-001` | SAST (Node) | Transport | `rejectUnauthorized: false` or `NODE_TLS_REJECT_UNAUTHORIZED=0` |
-| `GO-CMDI-001` | SAST (Go) | Command injection | `exec.Command("sh", "-c", …)` or `exec.Command(var, …)` |
+| `GO-CMDI-001` | SAST (Go) | Command injection | `exec.Command("sh", "-c", …)` — import-binding gated, alias-aware (`import exc "os/exec"`) |
 | `GO-SSRF-001` | SAST (Go) | SSRF | `http.Get/Post/Do` / `http.NewRequest*` without IP-allowlist hint |
 | `GO-PATH-001` | SAST (Go) | Path traversal | `os.Open/ReadFile/Create/WriteFile` / `ioutil.*` without `filepath.EvalSymlinks` + prefix check |
 | `GO-DES-001` | SAST (Go) | Deserialization | `yaml.Unmarshal` / `gob.Decode` / `xml.Unmarshal` |
+| `GO-PLUG-001` | SAST (Go) | Sandbox escape | `plugin.Open(...)` — loads arbitrary shared-object code at runtime |
 | `GO-AUTH-002` | SAST (Go) | Transport | `http.ListenAndServe` bound to `:PORT` / `0.0.0.0` / `[::]` |
-| `RUST-CMDI-001` | SAST (Rust) | Command injection | `Command::new("sh"|"cmd")` followed by `.arg("-c"|"/c")` |
+| `RUST-CMDI-001` | SAST (Rust) | Command injection | `Command::new("sh"|"cmd")` followed by `.arg("-c"|"/c")` — gated on `use std::process` |
 | `RUST-SSRF-001` | SAST (Rust) | SSRF | `reqwest::get` / `reqwest::Client::new().get/post/request` without `IpAddr::is_private` hint |
+| `RUST-DES-001` | SAST (Rust) | Deserialization | `bincode::deserialize` / `rmp_serde::from_*` / `serde_json::from_slice` on untrusted bytes |
+| `RUST-FFI-001` | SAST (Rust) | Command injection | `unsafe { libc::system(...) }` / `libc::exec*` — direct syscall bypass |
+| `RUST-AUTH-001` | SAST (Rust) | Transport | `danger_accept_invalid_certs(true)` / `danger_accept_invalid_hostnames(true)` |
+| `RUST-PATH-001` | SAST (Rust) | Path traversal | `std::fs::File::open/create` with dynamic path, no canonicalize-and-prefix check |
+| `RUBY-CMDI-001` | SAST (Ruby) | Command injection | Backticks, `%x{}`, `system` / `exec` / `Process.spawn` / `IO.popen` — receiver-lookbehind excludes `obj.system(...)` |
+| `RUBY-CMDI-002` | SAST (Ruby) | Command injection | `eval` / `instance_eval` / `class_eval` / `ERB.new(...).result` with dynamic template |
+| `RUBY-DES-001` | SAST (Ruby) | Deserialization | `Marshal.load` / `YAML.load` (pre-3.1 unsafe) / `YAML.unsafe_load` |
+| `RUBY-SSRF-001` | SAST (Ruby) | SSRF | `Net::HTTP.get` / `URI.open` / open-uri-hijacked `open(...)` with dynamic URL |
+| `RUBY-PATH-001` | SAST (Ruby) | Path traversal | `File.read/write/open` / `IO.read` / `Pathname.new(...)` with dynamic path |
+| `RUBY-AUTH-001` | SAST (Ruby) | Transport | `OpenSSL::SSL::VERIFY_NONE` |
 
 ---
 
@@ -144,7 +160,7 @@ flowchart TD
 ### From the wheel (built in `dist/`)
 
 ```bash
-pipx install dist/mception-0.1.0-py3-none-any.whl
+pipx install dist/mception-0.5.0-py3-none-any.whl
 mception                           # starts the stdio MCP server
 ```
 
@@ -214,7 +230,7 @@ python packaging/build_bundle.py    # produces dist/mception.exe
 python packaging/build_mcpb.py      # produces dist/mception-<version>.mcpb
 ```
 
-Then double-click `dist/mception-0.3.1.mcpb` (or drag it onto Claude Desktop). The client reads [`packaging/manifest.json`](packaging/manifest.json), prompts for:
+Then double-click `dist/mception-0.5.0.mcpb` (or drag it onto Claude Desktop). The client reads [`packaging/manifest.json`](packaging/manifest.json), prompts for:
 
 - Enable LLM judge (`MCEPTION_ENABLE_LLM_JUDGE`)
 - Offline mode (`MCEPTION_OFFLINE`)
@@ -567,6 +583,34 @@ See [`src/mception/scoring.py`](src/mception/scoring.py) for the exact implement
 mception-cli scan ./my-mcp-server --format=sarif > mception.sarif
 # (CLI batch mode — planned; for now, invoke via the MCP protocol or a short Python script.)
 ```
+
+---
+
+## Suppressions — `.mception.yml`
+
+Drop a `.mception.yml` at the root of the target repo to suppress known-acceptable findings. See the fully-commented template at [docs/example.mception.yml](docs/example.mception.yml). Suppressed findings are preserved on the report under `suppressed_findings` — never silently dropped.
+
+```yaml
+suppressions:
+  - rule_id: NODE-CMDI-002
+    path: "figma-desktop-bridge/**"
+    reason: "eval in Figma plugin sandbox, accepted risk"
+  - rule_id: "OSV-*"
+    dependency: "vite"
+    reason: "dev-only, tracked weekly"
+  - category: dependency_vuln
+    scope: dev
+    reason: "dev-scope CVEs never block a release"
+```
+
+Match keys (all optional, combined with AND):
+- `rule_id` — fnmatch glob (`OSV-*`).
+- `path` — `pathlib` glob against the first evidence location.
+- `dependency` — matches `DEPENDENCY_VULN` findings on a specific package name.
+- `category` — exact `Category` value.
+- `scope` — matches `evidence[0].extra.scope` (useful for dep vulns).
+
+Set `MCEPTION_SUPPRESSIONS_FILE` to override the default filename.
 
 ---
 
