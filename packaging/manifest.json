@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "mception",
   "display_name": "mception — MCP security auditor",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Audits other MCP servers for security risks and returns safe / caution / unsafe verdicts.",
   "long_description": "mception is a meta-MCP: it registers as an MCP server and exposes tools that audit OTHER MCP servers for tool poisoning, prompt injection, SSRF, command injection, credential exfiltration, supply-chain risk, rug-pulls, and lethal-trifecta composition across multiple servers in one config. Point it at a local path, an npm / PyPI package, a git repo, or a Docker image, and it returns one of: safe_to_use, use_with_caution, unsafe_to_use, inconclusive. 60+ rules across 6 categories; supports servers written in Python, TypeScript/JavaScript, Go, Rust, or Ruby. No API key required — the optional LLM judge uses the MCP sampling primitive so the host agent's own model responds.",
   "author": {
