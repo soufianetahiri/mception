@@ -400,8 +400,20 @@ def _extract_go(path: Path) -> list[ExtractedItem]:
     return out
 
 
+_GO_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\"}
+
+
 def _go_unescape(s: str) -> str:
-    return s.replace('\\"', '"').replace("\\\\", "\\").replace("\\n", "\n").replace("\\t", "\t")
+    out: list[str] = []
+    i = 0
+    while i < len(s):
+        if s[i] == "\\" and i + 1 < len(s):
+            out.append(_GO_ESCAPES.get(s[i + 1], s[i + 1]))
+            i += 2
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
 
 
 # ---- Rust (regex; cover rmcp / mcp-sdk idioms) ----
@@ -453,13 +465,21 @@ def _extract_rust(path: Path) -> list[ExtractedItem]:
     return out
 
 
+_JS_ESCAPES = {
+    "n": "\n", "t": "\t", "r": "\r",
+    "'": "'", '"': '"', "`": "`", "\\": "\\",
+}
+
+
 def _unescape(s: str) -> str:
     # Cheap JS string-escape unescape: covers \n, \t, \\, \', \", \`.
-    return (
-        s.replace("\\n", "\n")
-        .replace("\\t", "\t")
-        .replace("\\'", "'")
-        .replace('\\"', '"')
-        .replace("\\`", "`")
-        .replace("\\\\", "\\")
-    )
+    out: list[str] = []
+    i = 0
+    while i < len(s):
+        if s[i] == "\\" and i + 1 < len(s):
+            out.append(_JS_ESCAPES.get(s[i + 1], s[i + 1]))
+            i += 2
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)

@@ -2,6 +2,13 @@
 
 All notable changes to mception.
 
+## [0.5.2] — 2026-04-27
+
+### Fixed
+- **`engines/sast.py` — Bandit category mapping.** `_category_for_bandit` was slicing `test_id[:3]` and comparing against 4-char IDs (`B602`, `B309`, `B311`, …). The 4-char comparisons were unreachable, so `B309`/`B311` (crypto / weak PRNG) silently fell through the `B30` prefix and were miscategorized as `DESERIALIZATION` instead of `PROVENANCE`.
+- **`engines/source_parse.py` — JS / Go string unescape order.** `_unescape` and `_go_unescape` chained `.replace()` calls with `\\\\` last, so any string containing a literal backslash followed by `n`/`t`/etc. was misparsed (e.g. `\\n` in source became a real newline instead of `\n`). Rewritten as a single left-to-right pass that consumes one escape at a time.
+- **`rules/code_rules.py` — `subprocess(..., shell=True)` confidence inversion.** Tainted args (user input flowing into shell) were tagged `LIKELY` while clean static commands were tagged `CONFIRMED`. Inverted to match the parallel `os.system` branch: tainted → `CONFIRMED`, clean → `LIKELY`.
+
 ## [0.5.1] — 2026-04-22
 
 ### Added

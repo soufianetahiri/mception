@@ -180,7 +180,7 @@ mception is published in three places so you can pick the install path that matc
 
 ```bash
 uvx mception                        # latest
-uvx mception@0.5.1                  # pinned
+uvx mception@0.5.2                  # pinned
 ```
 
 ### Via `pipx` — install once, upgrade in place
@@ -204,7 +204,7 @@ curl https://registry.modelcontextprotocol.io/v0/servers/io.github.soufianetahir
 ### From a local wheel (offline / pre-release testing)
 
 ```bash
-pipx install dist/mception-0.5.1-py3-none-any.whl
+pipx install dist/mception-0.5.2-py3-none-any.whl
 ```
 
 ### From source (editable, for development)
@@ -267,7 +267,7 @@ python packaging/build_bundle.py    # produces dist/mception.exe
 python packaging/build_mcpb.py      # produces dist/mception-<version>.mcpb
 ```
 
-Then double-click `dist/mception-0.5.1.mcpb` (or drag it onto Claude Desktop). The client reads [`packaging/manifest.json`](packaging/manifest.json), prompts for:
+Then double-click `dist/mception-0.5.2.mcpb` (or drag it onto Claude Desktop). The client reads [`packaging/manifest.json`](packaging/manifest.json), prompts for:
 
 - Enable LLM judge (`MCEPTION_ENABLE_LLM_JUDGE`)
 - Offline mode (`MCEPTION_OFFLINE`)

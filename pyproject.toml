@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mception"
-version = "0.5.1"
+version = "0.5.2"
 description = "MCP server that audits other MCP servers for security risks"
 readme = "README.md"
 license = { text = "MIT" }

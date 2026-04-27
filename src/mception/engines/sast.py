@@ -211,21 +211,18 @@ def _run_bandit(workdir: Path) -> list[Finding]:
 
 def _category_for_bandit(test_id: str) -> Category:
     # Rough mapping so Bandit findings sort sensibly in score breakdown.
-    family = test_id[:3].upper()
-    if family in ("B60", "B602", "B603", "B604", "B605", "B606", "B607"):
+    tid = test_id.upper()
+    if tid in ("B602", "B603", "B604", "B605", "B606", "B607", "B609"):
         return Category.COMMAND_INJECTION
-    if family in ("B30", "B301", "B302", "B303", "B304", "B305", "B306", "B307", "B308", "B310"):
+    if tid in ("B301", "B302", "B303", "B304", "B305", "B306", "B307", "B308", "B310"):
         return Category.DESERIALIZATION
-    if family in ("B30", "B309", "B311"):
+    if tid in ("B309", "B311"):
         return Category.PROVENANCE
-    if family in ("B60",):
-        return Category.COMMAND_INJECTION
-    if family in ("B10",):
+    family = tid[:3]
+    if family == "B10":
         return Category.CREDENTIAL_EXFIL
-    if family in ("B20",):
+    if family == "B20":
         return Category.DESERIALIZATION
-    if family in ("B50",):
-        return Category.AUTH
-    if family in ("B70",):
+    if family in ("B50", "B70"):
         return Category.AUTH
     return Category.META

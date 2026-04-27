@@ -356,7 +356,7 @@ def rule_command_injection(ctx: CodeContext) -> Iterable[Finding]:
             shell = _kwarg_bool(call, "shell")
             if shell is True:
                 tainted = _any_arg_tainted(call, ctx.param_names)
-                conf = Confidence.CONFIRMED if not tainted else Confidence.LIKELY
+                conf = Confidence.CONFIRMED if tainted else Confidence.LIKELY
                 sev = Severity.CRITICAL if tainted else Severity.HIGH
                 out.append(
                     _cmdi_finding(
